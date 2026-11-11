@@ -1,0 +1,187 @@
+name: 构建 youxiang.so
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: PHP ${{ matrix.php }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { php: '7.4', os: ubuntu-latest }
+          - { php: '8.0', os: ubuntu-latest }
+          - { php: '8.1', os: ubuntu-latest }
+          - { php: '8.2', os: ubuntu-latest }
+          - { php: '8.3', os: ubuntu-latest }
+          - { php: '8.2', os: ubuntu-20.04 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, openssl, curl, gd, fileinfo, pdo_sqlite, sqlite3
+          coverage: none
+
+      - name: 打印 PHP 头文件中的相关 API 签名
+        run: |
+          INC=$(php-config --include-dir 2>/dev/null || echo /usr/include/php/$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;'))
+          echo "include dir: $INC"
+          grep -rn "zend_compile_string" "$INC/Zend/zend_compile.h" || true
+          grep -rn -A 8 "struct _zend_file_handle" "$INC/Zend/zend_types.h" | head -20 || true
+          grep -rn "ZEND_COMPILE_STRING" "$INC/Zend/"*.h | head -5 || true
+
+      - name: 准备构建工具
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential autoconf pkg-config > /dev/null
+          php -v
+          phpize --version
+
+      - name: 编译扩展
+        run: |
+          phpize
+          ./configure --enable-youxiang
+          make -j"$(nproc)"
+          ls -la modules/
+
+
+
+      - name: 校验发布版不含调试输出
+        run: |
+          if strings modules/youxiang.so | grep -q "youxiang] compile"; then
+            echo "发布版产物包含调试输出字符串，构建中止"
+            exit 1
+          fi
+          echo "发布版产物：不含调试输出 ✓"
+
+      - name: 上传 youxiang.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: youxiang-php${{ matrix.php }}-${{ matrix.os }}
+          path: modules/youxiang.so
+          if-no-files-found: error
+
+      - name: 上传源码包（便于离线部署）
+        uses: actions/upload-artifact@v4
+        with:
+          name: youxiang-src-php${{ matrix.php }}
+          path: |
+            src/youxiang.c
+            config.m4
+          if-no-files-found: error
+
+  e2e:
+    name: 端到端（真实程序包 + 扩展）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, openssl, curl, gd, fileinfo, pdo_sqlite, sqlite3
+          coverage: none
+
+      - name: 拉取程序包源码
+        run: git clone --depth 1 https://github.com/YeXuanHs/youxiang-finance.git app
+
+      - name: 关闭源码级内置授权（强制由扩展负责识别）
+        run: |
+          sed -i "s/const ALWAYS_AUTHORIZED = true;/const ALWAYS_AUTHORIZED = false;/" app/includes/license.php
+          grep -n "ALWAYS_AUTHORIZED = " app/includes/license.php
+
+      - name: 编译扩展
+        run: |
+          phpize
+          ./configure --enable-youxiang
+          make -j"$(nproc)"
+
+      - name: 启动站点（带扩展）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -S 127.0.0.1:8123 -t app > /tmp/srv.log 2>&1 &
+          sleep 3
+          curl -sS -o /dev/null -w "首页 HTTP %{http_code}\n" http://127.0.0.1:8123/index.php
+
+      - name: 走完安装向导（授权码填随机 md5）
+        run: |
+          set -e
+          B=http://127.0.0.1:8123/install/install.php
+          J=/tmp/jar.txt
+          T=$(curl -sS -c $J "$B?step=1" | grep -oE 'name="_csrf" value="[a-f0-9]+"' | grep -oE '[a-f0-9]{16,}' | head -1)
+          curl -sS -c $J -b $J -o /dev/null -d "_csrf=$T" -d "action=step1" -d "agree=1" "$B?step=1"
+          T=$(curl -sS -c $J -b $J "$B?step=2" | grep -oE 'name="_csrf" value="[a-f0-9]+"' | grep -oE '[a-f0-9]{16,}' | head -1)
+          curl -sS -c $J -b $J -o /dev/null -d "_csrf=$T" -d "action=step2" "$B?step=2"
+          T=$(curl -sS -c $J -b $J "$B?step=3" | grep -oE 'name="_csrf" value="[a-f0-9]+"' | grep -oE '[a-f0-9]{16,}' | head -1)
+          curl -sS -c $J -b $J -o /dev/null -d "_csrf=$T" -d "action=step3" -d "site_name=E2E" -d "site_domain=e2e.local" -d "admin_path=admin" -d "edition=enterprise" -d "driver=sqlite" -d "prefix=yx_" --data-urlencode "db_path=/tmp/e2e.db" "$B?step=3"
+          T=$(curl -sS -c $J -b $J "$B?step=4" | grep -oE 'name="_csrf" value="[a-f0-9]+"' | grep -oE '[a-f0-9]{16,}' | head -1)
+          CODE=$(php -r "echo md5('youxiang-e2e');")
+          echo "使用的授权码（随机 md5）: $CODE"
+          curl -sS -c $J -b $J -L -o /tmp/step4.html -w "step4 HTTP %{http_code}\n" -d "_csrf=$T" -d "action=step4" -d "admin_user=admin" -d "admin_pass=Admin12345" -d "admin_pass2=Admin12345" -d "admin_email=a@b.com" -d "license_key=$CODE" "$B?step=4"
+          if grep -q "安装完成" /tmp/step4.html; then
+            echo "安装向导完成"
+          else
+            echo "安装未完成，页面片段："; tail -40 /tmp/step4.html; exit 1
+          fi
+
+      - name: 诊断（钩子是否命中真实文件）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require getcwd() . "/app/includes/bootstrap.php";
+          echo "patched_log: " . json_encode(youxiang_patched_log()) . "\n";
+          $r = YxLicense::query("e2e.local", true);
+          echo "status=" . $r["status"] . " edition=" . $r["edition"] . "\n";
+          '
+
+      - name: 校验运行时识别为企业版（由扩展负责）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require getcwd() . "/app/includes/bootstrap.php";
+          $r = YxLicense::query("e2e.local", true);
+          echo "status=" . $r["status"] . "  edition=" . $r["edition"] . "  authorized=" . var_export($r["authorized"], true) . "\n";
+          exit(($r["status"] === "authorized" && $r["edition"] === "enterprise") ? 0 : 1);
+          '
+          echo "✓ 真实程序的 YxLicense::query() 已被扩展改写为 authorized / enterprise"
+
+      - name: 校验真实程序的到期日口径（一次性 = 永久）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require getcwd() . "/app/includes/bootstrap.php";
+          $once = YxBusiness::appExpire(["id" => 1, "price" => 366, "bill_type" => "once", "edition_min" => "basic"]);
+          $year = YxBusiness::appExpire(["id" => 2, "price" => 199, "bill_type" => "year", "edition_min" => "basic"]);
+          echo "once=" . var_export($once, true) . "  year=" . var_export($year, true) . "\n";
+          exit(($once === null && $year === date("Y-m-d", strtotime("+1 year"))) ? 0 : 1);
+          '
+          echo "✓ 一次性商品到期日为永久（NULL），按年商品仍为一年后"
+
+      - name: 双方案并存（源码级开关也打开 + 扩展同时生效）
+        run: |
+          sed -i "s/const ALWAYS_AUTHORIZED = false;/const ALWAYS_AUTHORIZED = true;/" app/includes/license.php
+          grep -n "ALWAYS_AUTHORIZED = " app/includes/license.php
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require getcwd() . "/app/includes/bootstrap.php";
+          $r = YxLicense::query("e2e.local", true);
+          echo "query: status=" . $r["status"] . " edition=" . $r["edition"] . " authorized=" . var_export($r["authorized"], true) . "\n";
+          $exp = YxBusiness::appExpire(["id" => 1, "price" => 366, "bill_type" => "once", "edition_min" => "basic"]);
+          echo "appExpire(once)=" . var_export($exp, true) . "\n";
+          $bad = ($r["status"] !== "authorized" || $r["edition"] !== "enterprise" || $exp !== null);
+          exit($bad ? 1 : 0);
+          '
+          echo "✓ 源码级与扩展同时开启：结论一致，无冲突、无报错"
+
+      - name: 校验安装状态已写入
+        run: |
+          grep -n "'installed'" app/includes/config.php

@@ -1,0 +1,12 @@
+modules/
+*.o
+*.lo
+*.la
+.deps
+Makefile
+configure
+config.h
+config.status
+autom4te.cache/
+run-tests.php
+dist/
