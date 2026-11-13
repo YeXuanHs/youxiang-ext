@@ -143,20 +143,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:Path = "C:\php;$env:Path"
-          # Windows 上 phpize.bat 会把 configure.js / configure.bat 生成到「PHP 安装目录」，
-          # 所以扩展源码必须放进 C:\php 里再编译（这也是 PHP 官方文档的 Windows 做法）：
-          #   1) 复制扩展源码到 C:\php\ext\youxiang
-          #   2) 在该目录里跑 phpize.bat → configure.bat → nmake
+          # phpize.bat 内部是 `SET PHP_BUILDCONF_PATH=%~dp0` ——
+          # 它把自己所在目录当作构建根。所以必须把 phpize.bat / script/ / build/
+          # 复制到扩展源码目录里，在那一层跑 phpize → configure → nmake。
           $src = (Get-Location).Path
           $ext = 'C:\php\ext\youxiang'
           New-Item -ItemType Directory -Path $ext -Force | Out-Null
-          Copy-Item "$src\src"    $ext\ -Recurse -Force
+          Copy-Item "$src\src"       $ext\ -Recurse -Force
           Copy-Item "$src\config.m4" $ext\ -Force
+          foreach ($f in @('phpize.bat', 'script', 'build')) {
+              $p = Join-Path 'C:\php' $f
+              if (Test-Path $p) { Copy-Item $p $ext\ -Recurse -Force }
+          }
           Set-Location $ext
           php -v
-          & C:\php\phpize.bat
+          & "$ext\phpize.bat"
           if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
-          if (-not (Test-Path "$ext\configure.bat")) { throw "configure.bat 未生成（phpize 阶段可能失败）" }
+          if (-not (Test-Path "$ext\configure.bat")) { throw "configure.bat 未生成" }
           & "$ext\configure.bat" --enable-youxiang
           if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
           nmake
