@@ -142,12 +142,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # 扩展源码目录：configure / nmake 都必须在这里跑
+          # （在 PHP 安装目录里跑会报 "Must be run from the root of the extension source"）
+          $ext = (Get-Location).Path
           $env:Path = "C:\php;$env:Path"
-          Set-Location C:\php
+          Set-Location $ext
           php -v
-          & .\phpize.bat
+          # phpize.bat 在 PHP 安装目录，但要在扩展源码目录里执行，configure.js 才会生成到扩展目录
+          & C:\php\phpize.bat
           if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
-          & .\configure.bat --enable-youxiang
+          & C:\php\configure.bat --enable-youxiang
           if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
           nmake
           if ($LASTEXITCODE -ne 0) { throw "nmake 失败" }
@@ -157,7 +161,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: youxiang-php${{ matrix.php }}-windows
-          path: C:/php/modules/*.dll
+          path: modules/*.dll
           if-no-files-found: error
 
   e2e:
