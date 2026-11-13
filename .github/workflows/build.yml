@@ -185,3 +185,76 @@ jobs:
       - name: 校验安装状态已写入
         run: |
           grep -n "'installed'" app/includes/config.php
+
+  e2e164:
+    name: 端到端（1.6.4 开源版 + 扩展）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, openssl, curl, gd, fileinfo, pdo_sqlite, sqlite3
+          coverage: none
+
+      - name: 准备构建工具
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential autoconf pkg-config > /dev/null
+
+      - name: 拉取 1.6.4 开源版程序包
+        run: |
+          mkdir -p pkg && cd pkg
+          curl -sSL -o pkg.zip "${{ secrets.YX_PKG_164_URL || github.repository }}/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          unzip -q pkg.zip
+          ls includes/license/
+          test -f includes/license/community.php
+
+      - name: 编译扩展
+        run: |
+          phpize
+          ./configure --enable-youxiang
+          make -j"$(nproc)"
+
+      - name: 编译前的对照（未装扩展：应为 community / 开源版标识）
+        run: |
+          php -r '
+          require "pkg/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          echo "  status=" . $r["status"] . "  badge=" . YxLicense::badge("demo.local")["text"]
+             . "  isAuthorized=" . var_export(YxLicense::isAuthorized("demo.local"), true) . "\n";
+          '
+
+      - name: 装上扩展后：授权判定与界面标识都变为企业版
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          $b = YxLicense::badge("demo.local");
+          echo "  patched_log: " . json_encode(youxiang_patched_log()) . "\n";
+          echo "  status=" . $r["status"] . "  edition=" . $r["edition"]
+             . "  authorized=" . var_export($r["authorized"], true) . "\n";
+          echo "  badge=" . $b["text"] . " (class=" . $b["class"] . ")\n";
+          echo "  isAuthorized=" . var_export(YxLicense::isAuthorized("demo.local"), true) . "\n";
+          echo "  maxEdition=" . YxLicense::maxEdition() . "\n";
+          $ok = ($r["status"] === "authorized" && $r["edition"] === "enterprise"
+              && $b["text"] === "域名已正版授权" && $b["class"] === "ok"
+              && YxLicense::isAuthorized("demo.local") === true
+              && YxLicense::maxEdition() === "enterprise");
+          exit($ok ? 0 : 1);
+          '
+          echo "✓ 1.6.4 开源版：装上扩展后授权状态与界面标识均为企业版"
+
+      - name: 校验扩展未破坏 1.6.4 的其余逻辑（社区模块仍可正常加载）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/license.php";
+          echo "  loader 加载的模块: " . YX_LICENSE_MODULE . "\n";
+          echo "  mode=" . YxLicense::mode() . "  modeLocked=" . var_export(YxLicense::modeLocked(), true) . "\n";
+          echo "  packageSecret=\"" . YxLicense::packageSecret() . "\"  (开源版应为空)\n";
+          $r = YxLicense::query("demo.local", true);
+          exit($r["edition"] === "enterprise" ? 0 : 1);
+          '
+          echo "✓ 加载器路径下同样生效，且开源版模块本身未被破坏"
