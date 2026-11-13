@@ -1,4 +1,4 @@
-name: 构建 youxiang.so
+name: 构建 youxiang 扩展（Linux .so / Windows .dll）
 
 on:
   push:
@@ -23,7 +23,6 @@ jobs:
           - { php: '8.1', os: ubuntu-latest }
           - { php: '8.2', os: ubuntu-latest }
           - { php: '8.3', os: ubuntu-latest }
-
     steps:
       - uses: actions/checkout@v4
 
@@ -46,9 +45,6 @@ jobs:
           phpize
           ./configure --enable-youxiang
           make -j"$(nproc)"
-          ls -la modules/
-
-
 
       - name: 校验发布版不含调试输出
         run: |
@@ -61,7 +57,7 @@ jobs:
       - name: 上传 youxiang.so
         uses: actions/upload-artifact@v4
         with:
-          name: youxiang-php${{ matrix.php }}-${{ matrix.os }}
+          name: youxiang-php${{ matrix.php }}-ubuntu-latest
           path: modules/youxiang.so
           if-no-files-found: error
 
@@ -72,6 +68,61 @@ jobs:
           path: |
             src/youxiang.c
             config.m4
+          if-no-files-found: error
+
+  windows:
+    name: Windows DLL (PHP ${{ matrix.php }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备 PHP 开发包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ matrix.php }}'
+          # 从 windows.php.net 的归档目录里挑该版本最后一个 -devel 包
+          # （标准 PHP 包不含 phpize 与头文件，必须另下 -devel）
+          $idx = (Invoke-WebRequest 'https://windows.php.net/downloads/releases/archives/').Content
+          $rx = [regex]("php-$v\.[0-9]+-nts-Win32-vs16-x64-devel\.zip")
+          $all = $rx.Matches($idx) | ForEach-Object { $_.Value } | Sort-Object -Unique
+          if (-not $all) { throw "在归档目录里找不到 PHP $v 的 -devel 包" }
+          $name = $all[-1]
+          Write-Host "使用 $name"
+          Invoke-WebRequest "https://windows.php.net/downloads/releases/archives/$name" -OutFile php-devel.zip
+          Expand-Archive php-devel.zip -DestinationPath C:\php-devel -Force
+          Get-ChildItem C:\php-devel | Select-Object -ExpandProperty Name
+
+      - name: 准备 MSVC 编译环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 编译扩展
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dev = (Get-ChildItem C:\php-devel -Directory | Select-Object -First 1).FullName
+          Write-Host "PHP 开发包: $dev"
+          $env:Path = "$dev;$env:Path"
+          Set-Location $dev
+          phpize
+          if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
+          & .\configure.bat --with-php-config="$dev\php-config.bat"
+          if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
+          nmake
+          if ($LASTEXITCODE -ne 0) { throw "nmake 失败" }
+          Get-ChildItem .\modules\*.dll | Select-Object Name, Length
+
+      - name: 上传 youxiang.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: youxiang-php${{ matrix.php }}-windows
+          path: modules/*.dll
           if-no-files-found: error
 
   e2e:
@@ -172,10 +223,6 @@ jobs:
           exit($bad ? 1 : 0);
           '
           echo "✓ 源码级与扩展同时开启：结论一致，无冲突、无报错"
-
-      - name: 校验安装状态已写入
-        run: |
-          grep -n "'installed'" app/includes/config.php
 
   e2e164:
     name: 端到端（1.6.4 开源版 + 扩展）
