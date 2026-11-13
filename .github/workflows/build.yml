@@ -256,6 +256,10 @@ jobs:
           echo "  isCommunity   : " . var_export(YxLicense::isCommunity(), true) . "\n";
           echo "  mode          : " . YxLicense::mode() . "\n";
           echo "  modeLocked    : " . var_export(YxLicense::modeLocked(), true) . "\n";
+          // 安装授权码在线复核：正版包靠它才能离线安装（私钥不在发行包内）
+          $rc2 = YxLicense::remoteVerifyPackageCode("demo.local", "official", "ABCD-EF12-3456-7890");
+          echo "  remoteVerify  : ok=" . var_export($rc2["ok"], true)
+             . " edition=" . $rc2["edition"] . "\n";
           // 复刻 admin/licenses.php 的「重新复核」分支：不再被开源版拦截
           if (YxLicense::isCommunity()) {
             echo "  recheck       : 当前为开源版（未启用授权模块），无需校验\n";
@@ -274,7 +278,8 @@ jobs:
               && $g["code"] === 0 && $g["data"]["ok"] === true
               && YxLicense::isCommunity() === false
               && YxLicense::mode() === "official"
-              && YxLicense::modeLocked() === false);
+              && YxLicense::modeLocked() === false
+              && $rc2["ok"] === true && $rc2["edition"] === "enterprise");
           exit($ok ? 0 : 1);
           '
           echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"

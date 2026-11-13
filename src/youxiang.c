@@ -183,6 +183,21 @@ static const yx_patch_t yx_patches_license[] = {
 		"\n        return false;"
 	},
 	{
+		/* 安装授权码的在线复核（客户端侧调用）：
+		 * 1.6.4 起授权码改用 Ed25519 非对称签名签发，私钥只在授权中心服务器上
+		 * （YX_CENTER_SECRET_FILE），发行包内只有公钥 —— 打包时无法把私钥带走。
+		 * 正版包若不联网复核就无法安装。这里改为恒通过，
+		 * 使正版包也能离线安装、授权码填任意内容均可。
+		 * 返回结构与官方实现一致：ok / reason / edition / message。 */
+		"public static function remoteVerifyPackageCode(string $domain, string $product, string $code): ?array",
+		"\n        return array("
+		"'ok' => true, "
+		"'reason' => 'builtin', "
+		"'edition' => 'enterprise', "
+		"'message' => '已正版授权（内置授权包 · 永久有效）'"
+		"); "
+	},
+	{
 		/* 下游授权查询服务：开源版原本恒 403「不提供授权查询服务」，
 		   这里放行任意请求（不校验签名），让 api/license.php?action=query 可用。 */
 		"public static function verifyRequest(array $req): array",
