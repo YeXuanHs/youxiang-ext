@@ -1,6 +1,6 @@
 # youxiang
 
-**优享财务系统 · 内置授权扩展** · 版本 1.0.0 · PHP 7.4 ~ 8.3 · MIT
+**优享财务系统 · 内置授权扩展** · 版本 1.1.0 · PHP 7.4 ~ 8.3 · MIT
 
 装上这个扩展后，优享财务系统的**安装向导与授权判定**按「内置授权」口径运行：不再要求先购买授权包，授权码仍需填写但内容不限，站点恒识别为**企业版正版授权**。
 
@@ -86,7 +86,19 @@ Array
 )
 ```
 
-**输出为空**说明目标文件没有被命中（通常是站点目录不是 `install/install.php` / `includes/license.php`，或函数签名与预期不同）——此时扩展不生效，但也不会影响站点正常运行。
+1.6.4 起授权模块拆成了 `includes/license/community.php`（开源版）与 `includes/license/official.php`（正版），
+此时会显示成：
+
+```
+Array
+(
+    [/var/www/你的站点/includes/license/community.php] => 3
+)
+```
+
+数字是**命中的改写点数量**：1.6.4 是 3（`query` / `badge` / `isAuthorized`），1.6.2 及以前是 1（只有 `query`）。
+
+**输出为空**说明目标文件没有被命中（通常是站点目录不是 `install/install.php` / 授权模块文件，或函数签名与预期不同）——此时扩展不生效，但也不会影响站点正常运行。
 
 ## 卸载 / 停用
 
@@ -100,18 +112,29 @@ Array
 
 ## 原理
 
-扩展接管 PHP 的文件编译入口（`zend_compile_file`）：在编译 `install/install.php` 与 `includes/license.php` 时，向目标函数的函数体开头插入一条提前返回的语句，使原函数体变为不可达代码。**磁盘上的源码内容完全不变**，行为差异只存在于内存中的编译结果。
+扩展接管 PHP 的文件编译入口（`zend_compile_file`）：在编译目标文件时，向目标函数的函数体开头插入一条提前返回的语句，使原函数体变为不可达代码。**磁盘上的源码内容完全不变**，行为差异只存在于内存中的编译结果。
 
-生效的四个位置：
+生效的位置：
 
 | 文件 | 函数 | 作用 |
 |---|---|---|
 | `install/install.php` | `install_check_license()` | 授权码校验恒通过 |
 | `install/install.php` | `install_license_required()` | 恒为 false（不再强制购买授权包） |
 | `install/install.php` | `install_license_gate_item()` | 第 2 步准入项显示「已授权」 |
-| `includes/license.php` | `YxLicense::query()` | 恒返回 authorized / enterprise |
+| `includes/license.php`（1.6.2 及以前） | `YxLicense::query()` | 恒返回 authorized / enterprise |
+| `includes/license/community.php`（1.6.4 开源版） | `query()` / `badge()` / `isAuthorized()` | 恒 authorized / enterprise / 「域名已正版授权」/ true |
+| `includes/license/official.php`（1.6.4 正版） | 同上 | 同上 |
 
 匹配按函数签名字面量进行，未命中即跳过该处（保持原有行为，不会导致报错）。
+
+### 为什么 1.6.4 需要额外改写 `badge()` 与 `isAuthorized()`
+
+1.6.4 起授权模块拆成「开源版 / 正版」两套互不复用的实现，其中开源版把界面标识**硬编码**了：
+
+- `badge()` 直接返回「开源版 · 未启用授权模块」，**不看** `query()` 的返回值；
+- `isAuthorized()` 恒返回 `false`。
+
+所以只改写 `query()` 的话，授权结论虽然已是 authorized，**界面角标仍然显示「开源版」**。这两个方法一起改写，前台、后台、授权中心才会统一显示「域名已正版授权」。
 
 ## 自行编译
 
