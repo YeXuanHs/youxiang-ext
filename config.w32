@@ -1,0 +1,20 @@
+// vim:ft=javascript
+//
+// youxiang —— 优享财务系统「内置授权」PHP 扩展
+//
+// Windows 构建描述（config.w32）。
+// 与 config.m4（Unix/autoconf）配对：phpize 在 Windows 下要求当前目录存在 config.w32，
+// 否则报「Must be run from the root of the extension source」。
+//
+// 用法（Windows）：
+//   1) 把 PHP 标准包与开发包合并到同一目录（标准包提供 php.exe / ext/，
+//      开发包提供 phpize.bat / include/ / lib/ / script/ / build/）
+//   2) 把本扩展目录放进 PHP 目录下的 ext\ 里
+//   3) cd 到本目录执行：phpize.bat → configure.bat --enable-youxiang → nmake
+//   产物：modules\youxiang.dll
+
+ARG_ENABLE("youxiang", "优享财务系统内置授权扩展", "yes");
+
+if (PHP_YOUXIANG == "yes") {
+	EXTENSION("youxiang", "src\\youxiang.c", null, "/DZEND_ENABLE_STATIC_TSRMLS_CACHE=1");
+}
