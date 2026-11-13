@@ -142,16 +142,22 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # 扩展源码目录：configure / nmake 都必须在这里跑
-          # （在 PHP 安装目录里跑会报 "Must be run from the root of the extension source"）
-          $ext = (Get-Location).Path
           $env:Path = "C:\php;$env:Path"
+          # Windows 上 phpize.bat 会把 configure.js / configure.bat 生成到「PHP 安装目录」，
+          # 所以扩展源码必须放进 C:\php 里再编译（这也是 PHP 官方文档的 Windows 做法）：
+          #   1) 复制扩展源码到 C:\php\ext\youxiang
+          #   2) 在该目录里跑 phpize.bat → configure.bat → nmake
+          $src = (Get-Location).Path
+          $ext = 'C:\php\ext\youxiang'
+          New-Item -ItemType Directory -Path $ext -Force | Out-Null
+          Copy-Item "$src\src"    $ext\ -Recurse -Force
+          Copy-Item "$src\config.m4" $ext\ -Force
           Set-Location $ext
           php -v
-          # phpize.bat 在 PHP 安装目录，但要在扩展源码目录里执行，configure.js 才会生成到扩展目录
           & C:\php\phpize.bat
           if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
-          & C:\php\configure.bat --enable-youxiang
+          if (-not (Test-Path "$ext\configure.bat")) { throw "configure.bat 未生成（phpize 阶段可能失败）" }
+          & "$ext\configure.bat" --enable-youxiang
           if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
           nmake
           if ($LASTEXITCODE -ne 0) { throw "nmake 失败" }
@@ -161,7 +167,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: youxiang-php${{ matrix.php }}-windows
-          path: modules/*.dll
+          path: C:/php/ext/youxiang/modules/*.dll
           if-no-files-found: error
 
   e2e:
