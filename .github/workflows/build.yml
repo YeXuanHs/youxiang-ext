@@ -113,10 +113,13 @@ jobs:
           Invoke-WebRequest "$base$stdName" -OutFile php-std.zip
           Invoke-WebRequest "$base$devName" -OutFile php-dev.zip
 
-          # 标准包直接铺开；开发包把 phpize.bat / include / lib 合并进去
+          # 标准包直接铺开到 C:\php；开发包单独解压后把 phpize.bat / include / lib 合并进去
+          # （注意：标准包自带一个空的 dev/ 占位目录，不能靠“取第一个目录”来定位 devel 根目录）
           Expand-Archive php-std.zip -DestinationPath C:\php -Force
-          $devRoot = (Get-ChildItem C:\php -Directory | Where-Object { $_.Name -like '*-devel-*' } | Select-Object -First 1)
-          if (-not $devRoot) { $devRoot = (Get-ChildItem C:\php -Directory | Select-Object -First 1) }
+          Expand-Archive php-dev.zip -DestinationPath C:\php-dev -Force
+          $devRoot = (Get-ChildItem C:\php-dev -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'phpize.bat') } | Select-Object -First 1)
+          if (-not $devRoot) { throw "开发包里没找到 phpize.bat（目录结构异常）" }
+          Write-Host "开发包根目录: $($devRoot.FullName)"
           Copy-Item "$($devRoot.FullName)\phpize.bat" C:\php\ -Force
           Copy-Item "$($devRoot.FullName)\include" C:\php\ -Recurse -Force
           Copy-Item "$($devRoot.FullName)\lib"       C:\php\ -Recurse -Force
