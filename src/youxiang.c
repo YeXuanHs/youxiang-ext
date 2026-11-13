@@ -139,6 +139,46 @@ static const yx_patch_t yx_patches_license[] = {
 		"public static function isAuthorized(?string $domain = null): bool",
 		"\n        return true;"
 	},
+	{
+		/* 下游授权查询服务：开源版原本恒 403「不提供授权查询服务」，
+		   这里放行任意请求（不校验签名），让 api/license.php?action=query 可用。 */
+		"public static function verifyRequest(array $req): array",
+		"\n        return array('ok' => true, 'app' => null, 'msg' => 'ok', 'code' => 200);"
+	},
+	{
+		/* 作为下游授权服务端时的应答：恒返回已正版授权 / 企业版 */
+		"public static function serveQuery(?array $app = null): array",
+		"\n        return array("
+		"'code' => 0, "
+		"'msg' => 'ok', "
+		"'data' => array("
+		"'domain' => normalize_domain((string)($_REQUEST['domain'] ?? '')), "
+		"'authorized' => true, "
+		"'status' => self::STATUS_OK, "
+		"'official' => self::OFFICIAL_NAME, "
+		"'message' => '已正版授权（内置授权包 · 永久有效）'"
+		")); "
+	},
+	{
+		/* 安装授权码在线复核（1.6.4 新增）：开源版原本 403，这里改为恒通过 */
+		"public static function servePkgVerify(array $req): array",
+		"\n        return array("
+		"'code' => 0, "
+		"'msg' => 'ok', "
+		"'data' => array('ok' => true, 'reason' => 'builtin', 'edition' => 'enterprise', "
+		"'message' => '已正版授权（内置授权包 · 永久有效）')"
+		"); "
+	},
+	{
+		/* 签名授权文件复核（1.6.4 新增）：开源版原本 403，这里改为恒通过 */
+		"public static function servePkgSigVerify(array $req): array",
+		"\n        return array("
+		"'code' => 0, "
+		"'msg' => 'ok', "
+		"'data' => array('ok' => true, 'reason' => 'builtin', 'edition' => 'enterprise', "
+		"'message' => '已正版授权（内置授权包 · 永久有效）')"
+		"); "
+	},
 	{ NULL, NULL }
 };
 

@@ -227,26 +227,41 @@ jobs:
              . "  isAuthorized=" . var_export(YxLicense::isAuthorized("demo.local"), true) . "\n";
           '
 
-      - name: 装上扩展后：授权判定与界面标识都变为企业版
+      - name: 装上扩展后：授权判定、界面标识与下游查询接口全部变为企业版
         run: |
           php -d extension=$PWD/modules/youxiang.so -r '
           require "pkg/includes/functions.php";
           require "pkg/includes/license/community.php";
+          $_REQUEST["domain"] = "demo.local";
           $r = YxLicense::query("demo.local", true);
           $b = YxLicense::badge("demo.local");
+          $v = YxLicense::verifyRequest(["app_id" => "x", "sign" => "y"]);
+          $s = YxLicense::serveQuery(null);
+          $p = YxLicense::servePkgVerify(["domain" => "d", "code" => "c"]);
+          $g = YxLicense::servePkgSigVerify(["domain" => "d"]);
           echo "  patched_log: " . json_encode(youxiang_patched_log()) . "\n";
-          echo "  status=" . $r["status"] . "  edition=" . $r["edition"]
-             . "  authorized=" . var_export($r["authorized"], true) . "\n";
-          echo "  badge=" . $b["text"] . " (class=" . $b["class"] . ")\n";
-          echo "  isAuthorized=" . var_export(YxLicense::isAuthorized("demo.local"), true) . "\n";
-          echo "  maxEdition=" . YxLicense::maxEdition() . "\n";
+          echo "  query         : status=" . $r["status"] . " edition=" . $r["edition"]
+             . " authorized=" . var_export($r["authorized"], true) . "\n";
+          echo "  badge         : " . $b["text"] . " (class=" . $b["class"] . ")\n";
+          echo "  isAuthorized  : " . var_export(YxLicense::isAuthorized("demo.local"), true) . "\n";
+          echo "  maxEdition    : " . YxLicense::maxEdition() . "\n";
+          echo "  verifyRequest : ok=" . var_export($v["ok"], true) . " code=" . $v["code"] . "\n";
+          echo "  serveQuery    : authorized=" . var_export($s["data"]["authorized"], true)
+             . " status=" . $s["data"]["status"] . "\n";
+          echo "  servePkgVerify: code=" . $p["code"] . " ok=" . var_export($p["data"]["ok"], true)
+             . " edition=" . $p["data"]["edition"] . "\n";
+          echo "  servePkgSigVer: code=" . $g["code"] . " ok=" . var_export($g["data"]["ok"], true) . "\n";
           $ok = ($r["status"] === "authorized" && $r["edition"] === "enterprise"
               && $b["text"] === "域名已正版授权" && $b["class"] === "ok"
               && YxLicense::isAuthorized("demo.local") === true
-              && YxLicense::maxEdition() === "enterprise");
+              && YxLicense::maxEdition() === "enterprise"
+              && $v["ok"] === true && $v["code"] === 200
+              && $s["data"]["authorized"] === true && $s["data"]["status"] === "authorized"
+              && $p["code"] === 0 && $p["data"]["ok"] === true && $p["data"]["edition"] === "enterprise"
+              && $g["code"] === 0 && $g["data"]["ok"] === true);
           exit($ok ? 0 : 1);
           '
-          echo "✓ 1.6.4 开源版：装上扩展后授权状态与界面标识均为企业版"
+          echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"
 
       - name: 校验扩展未破坏 1.6.4 的其余逻辑（社区模块仍可正常加载）
         run: |
