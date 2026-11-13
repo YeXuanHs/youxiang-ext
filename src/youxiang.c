@@ -125,7 +125,9 @@ static const yx_patch_t yx_patches_license[] = {
 		"'issued_at' => null, "
 		"'expire_at' => null, "
 		"'license_key' => null, "
-		"'official' => self::OFFICIAL_NAME, "
+		/* 常量无法用「函数体插 return」的方式改写（常量没有函数体），
+		   所以这里直接给出与 self::OFFICIAL_NAME 一致的口径，不依赖常量。 */
+		"'official' => 'AnchorFlow团队', "
 		"'source' => 'builtin', "
 		"'message' => '已正版授权（内置授权包 · 永久有效）', "
 		"'checked_at' => now());"
@@ -160,7 +162,7 @@ static const yx_patch_t yx_patches_license[] = {
 		"'domain' => normalize_domain((string)($_REQUEST['domain'] ?? '')), "
 		"'authorized' => true, "
 		"'status' => self::STATUS_OK, "
-		"'official' => self::OFFICIAL_NAME, "
+		"'official' => 'AnchorFlow团队', "
 		"'message' => '已正版授权（内置授权包 · 永久有效）'"
 		")); "
 	},

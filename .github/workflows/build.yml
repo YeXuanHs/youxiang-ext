@@ -247,7 +247,8 @@ jobs:
           echo "  maxEdition    : " . YxLicense::maxEdition() . "\n";
           echo "  verifyRequest : ok=" . var_export($v["ok"], true) . " code=" . $v["code"] . "\n";
           echo "  serveQuery    : authorized=" . var_export($s["data"]["authorized"], true)
-             . " status=" . $s["data"]["status"] . "\n";
+             . " status=" . $s["data"]["status"] . " official=" . $s["data"]["official"] . "\n";
+          echo "  query.official: " . $r["official"] . "\n";
           echo "  servePkgVerify: code=" . $p["code"] . " ok=" . var_export($p["data"]["ok"], true)
              . " edition=" . $p["data"]["edition"] . "\n";
           echo "  servePkgSigVer: code=" . $g["code"] . " ok=" . var_export($g["data"]["ok"], true) . "\n";
@@ -257,6 +258,7 @@ jobs:
               && YxLicense::maxEdition() === "enterprise"
               && $v["ok"] === true && $v["code"] === 200
               && $s["data"]["authorized"] === true && $s["data"]["status"] === "authorized"
+              && $r["official"] === "AnchorFlow团队" && $s["data"]["official"] === "AnchorFlow团队"
               && $p["code"] === 0 && $p["data"]["ok"] === true && $p["data"]["edition"] === "enterprise"
               && $g["code"] === 0 && $g["data"]["ok"] === true);
           exit($ok ? 0 : 1);
