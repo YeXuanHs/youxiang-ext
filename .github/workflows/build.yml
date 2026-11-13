@@ -43,6 +43,12 @@ jobs:
           grep -rn -A 8 "struct _zend_file_handle" "$INC/Zend/zend_types.h" | head -20 || true
           grep -rn "ZEND_COMPILE_STRING" "$INC/Zend/"*.h | head -5 || true
 
+      - name: 打印 zend_file_handle 字段类型（定位 filename/opened_path 的版本差异）
+        run: |
+          INC=$(php-config --include-dir)
+          echo "include dir: $INC"
+          sed -n '/_zend_file_handle {/,/};/p' "$INC/Zend/zend_types.h" | grep -E "filename|opened_path" || true
+
       - name: 准备构建工具
         run: |
           sudo apt-get update -qq
@@ -207,7 +213,8 @@ jobs:
       - name: 拉取 1.6.4 开源版程序包
         run: |
           mkdir -p pkg && cd pkg
-          curl -sSL -o pkg.zip "${{ secrets.YX_PKG_164_URL || github.repository }}/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          curl -sSL -o pkg.zip "https://github.com/YeXuanHs/youxiang-ext/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          ls -la pkg.zip
           unzip -q pkg.zip
           ls includes/license/
           test -f includes/license/community.php
