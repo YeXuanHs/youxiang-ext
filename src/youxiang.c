@@ -147,6 +147,39 @@ static const yx_patch_t yx_patches_license[] = {
 		"\n        return true;"
 	},
 	{
+		/* 开源版形态标记：原本恒 true，导致：
+		 *   - admin/licenses.php 的「重新复核」按钮被拦，提示「当前为开源版（未启用授权模块），无需校验」
+		 *   - tools/cron.php 的授权巡检被跳过
+		 * 改成 false 后，复核按钮会走正常流程，
+		 * 提示「复核完成：已正版授权（内置授权包 · 永久有效）（来源：builtin）」。
+		 * 配套：modeLocked() 一并放开，否则 edition.php 的形态锁定会拦住版本切换
+		 *      （条件是 modeLocked() && mode() !== config('license.mode')）。
+		 * setMode() 不动：官方模块的 setMode('official') 依然只接受 community。 */
+		"public static function isCommunity(): bool",
+		"\n        return false;"
+	},
+	{
+		/* 授权模式标识：社区版返回 'community'，导致 admin/licenses.php 顶部弹出横幅
+		   「当前为开源版（community）：授权模块未启用」。
+		   改成 'official' 即按正版形态呈现。
+		   前置条件：modeLocked() 已一并放开（见下），否则
+		   edition.php 的 canSwitch() 会因 mode() !== config('license.mode') 锁死版本切换。
+		   setMode() 仍只接受 community —— 那是官方模块的写入口，不受这里影响。 */
+		"public static function mode(): string",
+		"\n        return 'official';"
+	},
+	{
+		/* 形态锁定：原本恒 true，会带来四处「开源版」提示：
+		 *   - admin/licenses.php 顶部横幅「当前为开源版（community）：授权模块未启用」
+		 *   - admin/settings.php 授权模式显示「已锁定，不可切换正式版」
+		 *   - admin/edition.php  「本站为开源版发行包：不可切换正式版」
+		 *   - includes/edition.php canSwitch() 拦截版本档位切换
+		 * 改成 false 后，上述提示全部消失，后台呈现为正常的企业版形态，
+		 * 且普惠/专业/企业三档可自由切换。 */
+		"public static function modeLocked(): bool",
+		"\n        return false;"
+	},
+	{
 		/* 下游授权查询服务：开源版原本恒 403「不提供授权查询服务」，
 		   这里放行任意请求（不校验签名），让 api/license.php?action=query 可用。 */
 		"public static function verifyRequest(array $req): array",

@@ -253,6 +253,16 @@ jobs:
           echo "  servePkgVerify: code=" . $p["code"] . " ok=" . var_export($p["data"]["ok"], true)
              . " edition=" . $p["data"]["edition"] . "\n";
           echo "  servePkgSigVer: code=" . $g["code"] . " ok=" . var_export($g["data"]["ok"], true) . "\n";
+          echo "  isCommunity   : " . var_export(YxLicense::isCommunity(), true) . "\n";
+          echo "  mode          : " . YxLicense::mode() . "\n";
+          echo "  modeLocked    : " . var_export(YxLicense::modeLocked(), true) . "\n";
+          // 复刻 admin/licenses.php 的「重新复核」分支：不再被开源版拦截
+          if (YxLicense::isCommunity()) {
+            echo "  recheck       : 当前为开源版（未启用授权模块），无需校验\n";
+          } else {
+            $rc = YxLicense::query("demo.local", true);
+            echo "  recheck       : 复核完成：" . $rc["message"] . "（来源：" . $rc["source"] . "）\n";
+          }
           $ok = ($r["status"] === "authorized" && $r["edition"] === "enterprise"
               && $b["text"] === "域名已正版授权" && $b["class"] === "ok"
               && YxLicense::isAuthorized("demo.local") === true
@@ -261,7 +271,10 @@ jobs:
               && $s["data"]["authorized"] === true && $s["data"]["status"] === "authorized"
               && $r["official"] === "AnchorFlow团队" && $s["data"]["official"] === "AnchorFlow团队"
               && $p["code"] === 0 && $p["data"]["ok"] === true && $p["data"]["edition"] === "enterprise"
-              && $g["code"] === 0 && $g["data"]["ok"] === true);
+              && $g["code"] === 0 && $g["data"]["ok"] === true
+              && YxLicense::isCommunity() === false
+              && YxLicense::mode() === "official"
+              && YxLicense::modeLocked() === false);
           exit($ok ? 0 : 1);
           '
           echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"
