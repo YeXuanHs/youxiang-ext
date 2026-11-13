@@ -198,7 +198,8 @@ jobs:
       - name: 拉取 1.6.4 开源版程序包
         run: |
           mkdir -p pkg && cd pkg
-          URL="https://github.com/YeXuanHs/youxiang-ext/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          # 用 latest 指向当前 Release，避免删旧版时把下载地址带崩
+          URL="https://github.com/YeXuanHs/youxiang-ext/releases/latest/download/youxiang-finance-open-1.6.4.zip"
           for i in 1 2 3; do
             curl -sSL --retry 3 --retry-delay 3 -o pkg.zip "$URL" &&               [ "$(stat -c%s pkg.zip)" -gt 10000000 ] && break
             echo "第 $i 次下载失败或文件不完整，重试…"
