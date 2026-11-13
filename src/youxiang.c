@@ -29,7 +29,10 @@
  *     7) public static function isCommunity(...)   → false（解除「重新复核」拦截）
  *     8) public static function mode(...)          → 'official'（去掉「当前为开源版」横幅）
  *     9) public static function modeLocked(...)    → false（解除形态锁定与版本档位锁定）
- *    10) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
+ *    10) public static function remoteVerifyPackageCode(...)
+ *          → 恒 ok + enterprise：正版包的安装授权码改为 Ed25519 签名签发，
+ *            私钥只在授权中心服务器（不进发行包），此改写让正版包也能离线安装
+ *    11) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
  *     8) public static function serveQuery(...)     → 恒 authorized / enterprise
  *     9) public static function servePkgVerify(...) → 恒 ok + enterprise
  *    10) public static function servePkgSigVerify() → 恒 ok + enterprise
@@ -64,7 +67,7 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
-#define YX_EXT_VERSION "1.3.0"
+#define YX_EXT_VERSION "1.4.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 

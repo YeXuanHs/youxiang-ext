@@ -1,6 +1,6 @@
 # youxiang
 
-**优享财务系统 · 内置授权扩展** · 版本 1.3.0 · PHP 7.4 ~ 8.3 · MIT
+**优享财务系统 · 内置授权扩展** · 版本 1.4.0 · PHP 7.4 ~ 8.3 · MIT
 
 装上这个扩展后，优享财务系统的**安装向导与授权判定**按「内置授权」口径运行：不再要求先购买授权包，授权码仍需填写但内容不限，站点恒识别为**企业版正版授权**。
 
@@ -96,8 +96,9 @@ Array
 )
 ```
 
-数字是**命中的改写点数量**：1.6.4 是 10（`query` / `badge` / `isAuthorized` / `isCommunity` / `mode` /
-`modeLocked` / `verifyRequest` / `serveQuery` / `servePkgVerify` / `servePkgSigVerify`），1.6.2 及以前是 1（只有 `query`）。
+数字是**命中的改写点数量**：1.6.4 是 11（`query` / `badge` / `isAuthorized` / `isCommunity` / `mode` /
+`modeLocked` / `remoteVerifyPackageCode` / `verifyRequest` / `serveQuery` / `servePkgVerify` /
+`servePkgSigVerify`），1.6.2 及以前是 1（只有 `query`）。
 
 **输出为空**说明目标文件没有被命中（通常是站点目录不是 `install/install.php` / 授权模块文件，或函数签名与预期不同）——此时扩展不生效，但也不会影响站点正常运行。
 
@@ -128,6 +129,7 @@ Array
 | 同上 | `isCommunity()` | false（后台「重新复核」不再被拦，提示为已正版授权） |
 | 同上 | `mode()` | 'official'（去掉「当前为开源版」横幅） |
 | 同上 | `modeLocked()` | false（解除形态锁定与版本档位锁定） |
+| 同上 | `remoteVerifyPackageCode()` | 恒 ok + enterprise（正版包也能离线安装） |
 | 同上 | `verifyRequest()` | 放行任意下游请求（不校验签名） |
 | 同上 | `serveQuery()` | 恒 authorized / enterprise |
 | 同上 | `servePkgVerify()` | 恒 ok + enterprise（安装授权码复核） |
