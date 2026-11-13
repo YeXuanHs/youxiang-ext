@@ -1,6 +1,6 @@
 # youxiang
 
-**优享财务系统 · 内置授权扩展** · 版本 1.1.0 · PHP 7.4 ~ 8.3 · MIT
+**优享财务系统 · 内置授权扩展** · 版本 1.2.0 · PHP 7.4 ~ 8.3 · MIT
 
 装上这个扩展后，优享财务系统的**安装向导与授权判定**按「内置授权」口径运行：不再要求先购买授权包，授权码仍需填写但内容不限，站点恒识别为**企业版正版授权**。
 
@@ -96,7 +96,8 @@ Array
 )
 ```
 
-数字是**命中的改写点数量**：1.6.4 是 3（`query` / `badge` / `isAuthorized`），1.6.2 及以前是 1（只有 `query`）。
+数字是**命中的改写点数量**：1.6.4 是 7（`query` / `badge` / `isAuthorized` / `verifyRequest` / `serveQuery` /
+`servePkgVerify` / `servePkgSigVerify`），1.6.2 及以前是 1（只有 `query`）。
 
 **输出为空**说明目标文件没有被命中（通常是站点目录不是 `install/install.php` / 授权模块文件，或函数签名与预期不同）——此时扩展不生效，但也不会影响站点正常运行。
 
@@ -124,6 +125,10 @@ Array
 | `includes/license.php`（1.6.2 及以前） | `YxLicense::query()` | 恒返回 authorized / enterprise |
 | `includes/license/community.php`（1.6.4 开源版） | `query()` / `badge()` / `isAuthorized()` | 恒 authorized / enterprise / 「域名已正版授权」/ true |
 | `includes/license/official.php`（1.6.4 正版） | 同上 | 同上 |
+| 同上 | `verifyRequest()` | 放行任意下游请求（不校验签名） |
+| 同上 | `serveQuery()` | 恒 authorized / enterprise |
+| 同上 | `servePkgVerify()` | 恒 ok + enterprise（安装授权码复核） |
+| 同上 | `servePkgSigVerify()` | 恒 ok + enterprise（签名授权文件复核） |
 
 匹配按函数签名字面量进行，未命中即跳过该处（保持原有行为，不会导致报错）。
 

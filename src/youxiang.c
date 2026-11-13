@@ -26,6 +26,11 @@
  *     5) public static function badge(...)          → 恒「域名已正版授权」
  *     6) public static function isAuthorized(...)   → 恒 true
  *          前台角标「域名已正版授权」、后台授权中心、版本上限 maxEdition 全部为企业版
+ *     7) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
+ *     8) public static function serveQuery(...)     → 恒 authorized / enterprise
+ *     9) public static function servePkgVerify(...) → 恒 ok + enterprise
+ *    10) public static function servePkgSigVerify() → 恒 ok + enterprise
+ *          对外授权服务：api/license.php?action=query 与 action=pkg_verify 均可用
  *
  * 为什么 1.6.4 要加 badge()/isAuthorized() 两个锚点：
  *   1.6.4 起授权模块拆成 community / official 两套实现，
@@ -56,7 +61,7 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
-#define YX_EXT_VERSION "1.1.0"
+#define YX_EXT_VERSION "1.2.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
