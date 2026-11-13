@@ -67,7 +67,7 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
-#define YX_EXT_VERSION "1.4.0"
+#define YX_EXT_VERSION "1.1.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
