@@ -26,7 +26,10 @@
  *     5) public static function badge(...)          → 恒「域名已正版授权」
  *     6) public static function isAuthorized(...)   → 恒 true
  *          前台角标「域名已正版授权」、后台授权中心、版本上限 maxEdition 全部为企业版
- *     7) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
+ *     7) public static function isCommunity(...)   → false（解除「重新复核」拦截）
+ *     8) public static function mode(...)          → 'official'（去掉「当前为开源版」横幅）
+ *     9) public static function modeLocked(...)    → false（解除形态锁定与版本档位锁定）
+ *    10) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
  *     8) public static function serveQuery(...)     → 恒 authorized / enterprise
  *     9) public static function servePkgVerify(...) → 恒 ok + enterprise
  *    10) public static function servePkgSigVerify() → 恒 ok + enterprise
@@ -61,7 +64,7 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
-#define YX_EXT_VERSION "1.2.0"
+#define YX_EXT_VERSION "1.3.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
