@@ -23,7 +23,6 @@ jobs:
           - { php: '8.1', os: ubuntu-latest }
           - { php: '8.2', os: ubuntu-latest }
           - { php: '8.3', os: ubuntu-latest }
-          - { php: '8.2', os: ubuntu-20.04 }
 
     steps:
       - uses: actions/checkout@v4
@@ -34,23 +33,6 @@ jobs:
           php-version: ${{ matrix.php }}
           extensions: mbstring, openssl, curl, gd, fileinfo, pdo_sqlite, sqlite3
           coverage: none
-
-      - name: 打印 PHP 头文件中的相关 API 签名
-        run: |
-          INC=$(php-config --include-dir 2>/dev/null || echo /usr/include/php/$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;'))
-          echo "include dir: $INC"
-          grep -rn "zend_compile_string" "$INC/Zend/zend_compile.h" || true
-          grep -rn -A 8 "struct _zend_file_handle" "$INC/Zend/zend_types.h" | head -20 || true
-          grep -rn "ZEND_COMPILE_STRING" "$INC/Zend/"*.h | head -5 || true
-
-      - name: 打印 zend_file_handle 字段类型（定位 filename/opened_path 的版本差异）
-        run: |
-          INC=$(php-config --include-dir)
-          echo "include dir: $INC"
-          echo "--- grep filename/opened_path 全部命中 ---"
-          grep -rn "filename\|opened_path" "$INC/Zend/zend_types.h" | head -20 || true
-          echo "--- 结构体上下文 ---"
-          grep -n "zend_file_handle" "$INC/Zend/zend_types.h" | head -5 || true
 
       - name: 准备构建工具
         run: |
@@ -216,8 +198,15 @@ jobs:
       - name: 拉取 1.6.4 开源版程序包
         run: |
           mkdir -p pkg && cd pkg
-          curl -sSL -o pkg.zip "https://github.com/YeXuanHs/youxiang-ext/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          URL="https://github.com/YeXuanHs/youxiang-ext/releases/download/v1.1.0/youxiang-finance-open-1.6.4.zip"
+          for i in 1 2 3; do
+            curl -sSL --retry 3 --retry-delay 3 -o pkg.zip "$URL" &&               [ "$(stat -c%s pkg.zip)" -gt 10000000 ] && break
+            echo "第 $i 次下载失败或文件不完整，重试…"
+            sleep 5
+          done
           ls -la pkg.zip
+          # 大小不对就是没下全（Release 资产偶发 404 会返回几字节的 404 页面）
+          [ "$(stat -c%s pkg.zip)" -gt 10000000 ] || { echo "程序包下载不完整"; exit 1; }
           unzip -q pkg.zip
           ls includes/license/
           test -f includes/license/community.php
