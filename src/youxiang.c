@@ -251,15 +251,21 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 
 	/* 注意：include 传给编译器的 type 是 ZEND_INCLUDE / ZEND_REQUIRE，
 	 * 不是 ZEND_HANDLE_FILENAME —— 不能按 type 过滤，否则钩子会被整段短路。 */
-	/* PHP 8 的 include 走 zend_stream_init_filename_ex：filename 为空，
-	 * 真实路径在 opened_path（PHP 8 是 zend_string*，PHP 7 是 char*）。 */
-	/* opened_path 在 PHP 7.4 ~ 8.3 全都是 zend_string*，编译前已填好真实路径 */
+	/* 路径来源：opened_path（zend_string*，PHP 7.4 ~ 8.3 全版本一致）。
+	 * filename 只是兜底，且它的类型在版本间有变化：
+	 *   PHP 7.4 / 8.0  → const char *
+	 *   PHP 8.1 ~ 8.3  → zend_string *
+	 * 所以必须按版本分支取，否则 8.1+ 会报「incompatible pointer type」编译失败。 */
 	fn = NULL;
 	if (fh->opened_path) {
 		fn = ZSTR_VAL(fh->opened_path);
 	}
 	if (!fn || !*fn) {
-		fn = fh->filename;	/* 兜底：全版本都是 const char* */
+#if PHP_VERSION_ID >= 80100
+		fn = fh->filename ? ZSTR_VAL(fh->filename) : NULL;	/* PHP 8.1+ : zend_string* */
+#else
+		fn = fh->filename;		/* PHP 7.4 / 8.0 : const char* */
+#endif
 	}
 	if (fn && !*fn) {
 		fn = NULL;
