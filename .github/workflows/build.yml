@@ -47,7 +47,10 @@ jobs:
         run: |
           INC=$(php-config --include-dir)
           echo "include dir: $INC"
-          sed -n '/_zend_file_handle {/,/};/p' "$INC/Zend/zend_types.h" | grep -E "filename|opened_path" || true
+          echo "--- grep filename/opened_path 全部命中 ---"
+          grep -rn "filename\|opened_path" "$INC/Zend/zend_types.h" | head -20 || true
+          echo "--- 结构体上下文 ---"
+          grep -n "zend_file_handle" "$INC/Zend/zend_types.h" | head -5 || true
 
       - name: 准备构建工具
         run: |
