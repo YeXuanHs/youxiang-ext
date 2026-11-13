@@ -19,9 +19,22 @@
  *            - 第 3 步「未购买授权包 · 本程序不可安装」橙卡不再出现
  *            - 第 4 步「未填写授权码」红色警示不再出现
  *     3) function install_license_gate_item(): array → 恒「已授权 · 无需授权码」
- *   includes/license.php
+ *   includes/license.php            （1.6.2 及以前：单文件实现）
+ *   includes/license/community.php  （1.6.4 起：开源版实现）
+ *   includes/license/official.php   （1.6.4 起：正版实现）
  *     4) public static function query(...)          → 恒返回 authorized + enterprise
+ *     5) public static function badge(...)          → 恒「域名已正版授权」
+ *     6) public static function isAuthorized(...)   → 恒 true
  *          前台角标「域名已正版授权」、后台授权中心、版本上限 maxEdition 全部为企业版
+ *
+ * 为什么 1.6.4 要加 badge()/isAuthorized() 两个锚点：
+ *   1.6.4 起授权模块拆成 community / official 两套实现，
+ *   community 版把 badge() 硬编码成「开源版 · 未启用授权模块」、
+ *   isAuthorized() 恒返回 false —— 两者不再依赖 query() 的 status，
+ *   所以只改写 query() 改不掉界面文案，必须一并改写这两个方法。
+ *
+ * 插入体不引用 self::$memo：1.6.4 的 community.php 没有该静态属性，
+ * 引用会触发致命错误；因此统一「直接 return 数组」，对 1.6.2 / 1.6.4 都安全。
  *
  * 编译（Linux / 宝塔）：
  *   phpize && ./configure --enable-youxiang && make -j4
@@ -43,7 +56,7 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
-#define YX_EXT_VERSION "1.0.0"
+#define YX_EXT_VERSION "1.1.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
@@ -99,7 +112,7 @@ static const yx_patch_t yx_patches_install[] = {
 static const yx_patch_t yx_patches_license[] = {
 	{
 		"public static function query(string $domain, bool $force = false): array",
-		"\n        return self::$memo[$domain] = array("
+		"\n        return array("
 		"'domain' => normalize_domain($domain), "
 		"'authorized' => true, "
 		"'status' => self::STATUS_OK, "
@@ -111,6 +124,20 @@ static const yx_patch_t yx_patches_license[] = {
 		"'source' => 'builtin', "
 		"'message' => '已正版授权（内置授权包 · 永久有效）', "
 		"'checked_at' => now());"
+	},
+	{
+		/* 1.6.4 的 community 实现把角标文案硬编码成「开源版 · 未启用授权模块」，
+		   不看 query() 的返回值，所以必须单独改写，否则界面仍然是开源版标识。 */
+		"public static function badge(?string $domain = null): array",
+		"\n        return array("
+		"'text' => '域名已正版授权', "
+		"'class' => 'ok', "
+		"'icon' => '\xe2\x9c\x93', "
+		"'detail' => self::query($domain));"
+	},
+	{
+		"public static function isAuthorized(?string $domain = null): bool",
+		"\n        return true;"
 	},
 	{ NULL, NULL }
 };
@@ -240,7 +267,14 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 	if (fn) {
 		if (strstr(fn, "install/install.php") || strstr(fn, "install\\install.php")) {
 			patches = yx_patches_install;
-		} else if (strstr(fn, "includes/license.php") || strstr(fn, "includes\\license.php")) {
+		} else if (
+			/* 1.6.2 及以前：单文件 includes/license.php */
+			strstr(fn, "includes/license.php") || strstr(fn, "includes\\license.php")
+			/* 1.6.4 起：授权模块拆到 includes/license/{community,official}.php
+			   注意这两个路径不含 "includes/license.php" 子串，必须显式列出 */
+			|| strstr(fn, "includes/license/community.php") || strstr(fn, "includes\\license\\community.php")
+			|| strstr(fn, "includes/license/official.php")  || strstr(fn, "includes\\license\\official.php")
+		) {
 			patches = yx_patches_license;
 		}
 	}
