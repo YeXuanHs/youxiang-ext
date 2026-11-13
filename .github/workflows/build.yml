@@ -80,22 +80,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 准备 PHP 开发包
+      - name: 准备 PHP 标准包与开发包
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $v = '${{ matrix.php }}'
-          # 从 windows.php.net 的归档目录里挑该版本最后一个 -devel 包
-          # （标准 PHP 包不含 phpize 与头文件，必须另下 -devel）
+          # 归档目录里的包名规则：
+          #   标准包 php-<ver>-nts-Win32-vs16-x64.zip           （含 php.exe / ext/）
+          #   开发包 php-devel-pack-<ver>-nts-Win32-vs16-x64.zip（含 phpize.bat / include/ / lib/）
+          # Windows 编译扩展必须两者合并到同一目录：phpize 与 configure 都需要
           $idx = (Invoke-WebRequest 'https://windows.php.net/downloads/releases/archives/').Content
-          $rx = [regex]("php-$v\.[0-9]+-nts-Win32-vs16-x64-devel\.zip")
-          $all = $rx.Matches($idx) | ForEach-Object { $_.Value } | Sort-Object -Unique
-          if (-not $all) { throw "在归档目录里找不到 PHP $v 的 -devel 包" }
-          $name = $all[-1]
-          Write-Host "使用 $name"
-          Invoke-WebRequest "https://windows.php.net/downloads/releases/archives/$name" -OutFile php-devel.zip
-          Expand-Archive php-devel.zip -DestinationPath C:\php-devel -Force
-          Get-ChildItem C:\php-devel | Select-Object -ExpandProperty Name
+
+          function Pick-Pkg([string]$pattern, [string]$label) {
+              $rx = [regex]($pattern)
+              $all = $rx.Matches($idx) | ForEach-Object { $_.Value } | Sort-Object -Unique
+              if (-not $all) { throw "在归档目录里找不到 $label" }
+              # 按版本号取最大（去掉 -1 后缀再当版本号比较）
+              return ($all | ForEach-Object {
+                  [pscustomobject]@{
+                      File = $_
+                      Key  = [version](($_ -replace '^php(-devel-pack)?-', '' -replace '(-nts)?-Win32-vs16-x64\.zip$', '') -replace '-1$', '')
+                  }
+                } | Sort-Object Key -Descending | Select-Object -First 1).File
+          }
+
+          $stdName  = Pick-Pkg "php-$v\.[0-9]+(?:-1)?-nts-Win32-vs16-x64\.zip"   "PHP $v 标准包"
+          $devName  = Pick-Pkg "php-devel-pack-$v\.[0-9]+(?:-1)?-nts-Win32-vs16-x64\.zip" "PHP $v 开发包"
+          Write-Host "标准包: $stdName"
+          Write-Host "开发包: $devName"
+
+          $base = 'https://windows.php.net/downloads/releases/archives/'
+          Invoke-WebRequest "$base$stdName" -OutFile php-std.zip
+          Invoke-WebRequest "$base$devName" -OutFile php-dev.zip
+
+          # 标准包直接铺开；开发包把 phpize.bat / include / lib 合并进去
+          Expand-Archive php-std.zip -DestinationPath C:\php -Force
+          $devRoot = (Get-ChildItem C:\php -Directory | Where-Object { $_.Name -like '*-devel-*' } | Select-Object -First 1)
+          if (-not $devRoot) { $devRoot = (Get-ChildItem C:\php -Directory | Select-Object -First 1) }
+          Copy-Item "$($devRoot.FullName)\phpize.bat" C:\php\ -Force
+          Copy-Item "$($devRoot.FullName)\include" C:\php\ -Recurse -Force
+          Copy-Item "$($devRoot.FullName)\lib"       C:\php\ -Recurse -Force
+          Get-ChildItem C:\php | Select-Object -ExpandProperty Name
 
       - name: 准备 MSVC 编译环境
         uses: ilammy/msvc-dev-cmd@v1
@@ -106,13 +131,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dev = (Get-ChildItem C:\php-devel -Directory | Select-Object -First 1).FullName
-          Write-Host "PHP 开发包: $dev"
-          $env:Path = "$dev;$env:Path"
-          Set-Location $dev
-          phpize
+          $env:Path = "C:\php;$env:Path"
+          Set-Location C:\php
+          php -v
+          & .\phpize.bat
           if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
-          & .\configure.bat --with-php-config="$dev\php-config.bat"
+          & .\configure.bat --enable-youxiang
           if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
           nmake
           if ($LASTEXITCODE -ne 0) { throw "nmake 失败" }
@@ -122,7 +146,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: youxiang-php${{ matrix.php }}-windows
-          path: modules/*.dll
+          path: C:/php/modules/*.dll
           if-no-files-found: error
 
   e2e:
