@@ -231,6 +231,7 @@ jobs:
       - name: 编译前的对照（未装扩展：应为 community / 开源版标识）
         run: |
           php -r '
+          require "pkg/includes/functions.php";
           require "pkg/includes/license/community.php";
           $r = YxLicense::query("demo.local", true);
           echo "  status=" . $r["status"] . "  badge=" . YxLicense::badge("demo.local")["text"]
@@ -240,6 +241,7 @@ jobs:
       - name: 装上扩展后：授权判定与界面标识都变为企业版
         run: |
           php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/functions.php";
           require "pkg/includes/license/community.php";
           $r = YxLicense::query("demo.local", true);
           $b = YxLicense::badge("demo.local");
@@ -260,6 +262,7 @@ jobs:
       - name: 校验扩展未破坏 1.6.4 的其余逻辑（社区模块仍可正常加载）
         run: |
           php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/functions.php";
           require "pkg/includes/license.php";
           echo "  loader 加载的模块: " . YX_LICENSE_MODULE . "\n";
           echo "  mode=" . YxLicense::mode() . "  modeLocked=" . var_export(YxLicense::modeLocked(), true) . "\n";
