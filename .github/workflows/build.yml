@@ -120,9 +120,17 @@ jobs:
           $devRoot = (Get-ChildItem C:\php-dev -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'phpize.bat') } | Select-Object -First 1)
           if (-not $devRoot) { throw "开发包里没找到 phpize.bat（目录结构异常）" }
           Write-Host "开发包根目录: $($devRoot.FullName)"
+          # phpize.bat 会调用 script/phpize.js 生成 configure；build/ 里是 configure 的模板与工具，
+          # 少任何一个都会报「Can not find script file phpize.js」或生成不出 configure
+          foreach ($dir in @('include', 'lib', 'script', 'build')) {
+              $src = Join-Path $devRoot.FullName $dir
+              if (Test-Path $src) {
+                  Copy-Item $src C:\php\ -Recurse -Force
+              } else {
+                  Write-Host "（开发包里没有 $dir，跳过）"
+              }
+          }
           Copy-Item "$($devRoot.FullName)\phpize.bat" C:\php\ -Force
-          Copy-Item "$($devRoot.FullName)\include" C:\php\ -Recurse -Force
-          Copy-Item "$($devRoot.FullName)\lib"       C:\php\ -Recurse -Force
           Get-ChildItem C:\php | Select-Object -ExpandProperty Name
 
       - name: 准备 MSVC 编译环境
