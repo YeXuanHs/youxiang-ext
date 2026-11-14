@@ -12,46 +12,62 @@
  * 改写点（anchor 为函数/方法签名，未命中即跳过，保证容错）：
  *   install/install.php
  *     1) function install_check_license(...)      → 恒返回 ok + edition=enterprise
- *          第 4 步授权码：必须填，但填什么都过（任意 md5、任意字符串）
  *     2) function install_license_required(): bool → 恒 false
- *          解掉「必须购买授权包才能安装」：
- *            - 第 2 步「授权前提」项不再阻断下一步
- *            - 第 3 步「未购买授权包 · 本程序不可安装」橙卡不再出现
- *            - 第 4 步「未填写授权码」红色警示不再出现
  *     3) function install_license_gate_item(): array → 恒「已授权 · 无需授权码」
  *   includes/license.php            （1.6.2 及以前：单文件实现）
  *   includes/license/community.php  （1.6.4 起：开源版实现）
  *   includes/license/official.php   （1.6.4 起：正版实现）
- *     4) public static function query(...)          → 恒返回 authorized + enterprise
- *     5) public static function badge(...)          → 恒「域名已正版授权」
- *     6) public static function isAuthorized(...)   → 恒 true
- *          前台角标「域名已正版授权」、后台授权中心、版本上限 maxEdition 全部为企业版
- *     7) public static function isCommunity(...)   → false（解除「重新复核」拦截）
- *     8) public static function mode(...)          → 'official'（去掉「当前为开源版」横幅）
- *     9) public static function modeLocked(...)    → false（解除形态锁定与版本档位锁定）
- *    10) public static function remoteVerifyPackageCode(...)
- *          → 恒 ok + enterprise：正版包的安装授权码改为 Ed25519 签名签发，
- *            私钥只在授权中心服务器（不进发行包），此改写让正版包也能离线安装
- *    11) public static function verifyRequest(...)  → 放行任意请求（不校验下游签名）
- *     8) public static function serveQuery(...)     → 恒 authorized / enterprise
- *     9) public static function servePkgVerify(...) → 恒 ok + enterprise
- *    10) public static function servePkgSigVerify() → 恒 ok + enterprise
- *          对外授权服务：api/license.php?action=query 与 action=pkg_verify 均可用
+ *     4) query()               → authorized + enterprise
+ *     5) badge()               → 「域名已正版授权」
+ *     6) isAuthorized()        → true
+ *     7) isCommunity()         → false（解除「重新复核」拦截）
+ *     8) mode()                → 'official'（去掉「当前为开源版」横幅）
+ *     9) modeLocked()          → false（解除形态锁定与版本档位锁定）
+ *    10) remoteVerifyPackageCode() → ok + enterprise（正版包可离线安装）
+ *    11) verifyRequest()       → 放行任意请求
+ *    12) serveQuery()          → authorized / enterprise
+ *    13) servePkgVerify()      → ok + enterprise
+ *    14) servePkgSigVerify()   → ok + enterprise
  *
- * 为什么 1.6.4 要加 badge()/isAuthorized() 两个锚点：
- *   1.6.4 起授权模块拆成 community / official 两套实现，
- *   community 版把 badge() 硬编码成「开源版 · 未启用授权模块」、
- *   isAuthorized() 恒返回 false —— 两者不再依赖 query() 的 status，
- *   所以只改写 query() 改不掉界面文案，必须一并改写这两个方法。
+ * ------------------------------------------------------------------
+ * 设计约束（踩过的坑，改动前先读）：
  *
- * 插入体不引用 self::$memo：1.6.4 的 community.php 没有该静态属性，
- * 引用会触发致命错误；因此统一「直接 return 数组」，对 1.6.2 / 1.6.4 都安全。
+ * 【A】插入体必须完全自包含
+ *   只允许用 PHP 内置函数（strtolower / trim / date）与字面量。
+ *   不要引用 self::STATUS_OK、self::OFFICIAL_NAME、normalize_domain()、now()
+ *   等目标文件里的符号 —— 版本一变方法/常量就没了，引用即 fatal。
+ *   唯一允许的同类调用是 badge() 里的 self::query()（两者必同时存在）。
+ *   也不要引用 self::$memo：1.6.4 的 community.php 没有该静态属性。
+ *
+ * 【B】定位 '{' 不能靠 memchr
+ *   签名里的默认值可能含 '{'（如 string $code = '{'），必须按括号深度扫描，
+ *   并跳过字符串字面量与注释。见 yx_find_body_brace()。
+ *
+ * 【C】必须设置 op_array->opened_path
+ *   zend_compile_string 不走 zend_stream，返回的 op_array->opened_path 为 NULL；
+ *   require_once / include_once 的去重键依赖它，缺了会导致同一文件被二次编译，
+ *   进而 "Cannot redeclare function"。必须在返回前用 fh->opened_path 补上。
+ *
+ * 【D】opcache 交互
+ *   opcache 是 zend_extension，MINIT 早于本模块，因此 yx_orig_compile_file
+ *   指向的是 opcache 的钩子。命中文件时我们直接 zend_compile_string，
+ *   不经过 opcache —— 改写**有效**，但目标文件失去字节码缓存与 JIT，
+ *   每个请求重新编译。目标文件都很小（license 模块 ~8KB），可接受。
+ *   未命中文件仍走 yx_orig_compile_file，opcache 照常工作。
+ *
+ * 【E】未命中必须可见
+ *   锚点漂移是静默失效：官方改一个空格就 miss，代码放行原函数。
+ *   因此 hits==0 时写一条 E_WARNING（进程内只警告一次，避免刷屏），
+ *   并提供 youxiang_selftest() 主动体检。
+ *
+ * 【F】ZTS 下日志数组不是线程安全的
+ *   yx_log_* 是进程级静态数组，多线程 SAPI 会竞态。用 TSRM 互斥量保护。
  *
  * 编译（Linux / 宝塔）：
  *   phpize && ./configure --enable-youxiang && make -j4
  *   产物：modules/youxiang.so
  * 安装：
- *   extension=youxiang.so   （写进 php.ini）
+ *   extension=youxiang.so
  *
  * 兼容：PHP 7.4 ~ 8.3
  */
@@ -67,24 +83,60 @@
 #include "zend_API.h"
 #include "ext/standard/info.h"
 
+#ifdef ZTS
+#include "TSRM.h"
+#endif
+
 #define YX_EXT_VERSION "1.1.0"
 
 static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
-/* 诊断：记录被改写的文件与命中的锚点数量 */
+/* ------------------------------------------------------------------ */
+/* 线程安全                                                            */
+/* ------------------------------------------------------------------ */
+
+#ifdef ZTS
+static MUTEX_T yx_mutex = NULL;
+# define YX_LOCK()   do { tsrm_mutex_lock(yx_mutex); } while (0)
+# define YX_UNLOCK() do { tsrm_mutex_unlock(yx_mutex); } while (0)
+#else
+# define YX_LOCK()   do { } while (0)
+# define YX_UNLOCK() do { } while (0)
+#endif
+
+/* ------------------------------------------------------------------ */
+/* 诊断日志（进程级；每个文件只记一条）                                */
+/* ------------------------------------------------------------------ */
+
 #define YX_LOG_MAX 32
 static char yx_log_file[YX_LOG_MAX][512];
 static int  yx_log_hits[YX_LOG_MAX];
 static int  yx_log_count = 0;
 
-/* 记录改写情况（始终保留：部署后可用 youxiang_patched_log() 自查锚点是否命中） */
+/* 未命中告警：进程内只打一次，避免每请求刷屏 */
+static int yx_warned_miss = 0;
+
 static void yx_log(const char *file, int hits)
 {
+	int i;
+
+	YX_LOCK();
+	for (i = 0; i < yx_log_count; i++) {
+		if (strcmp(yx_log_file[i], file) == 0) {
+			/* 同名文件只保留最大命中数（不同路径可能同名） */
+			if (hits > yx_log_hits[i]) {
+				yx_log_hits[i] = hits;
+			}
+			YX_UNLOCK();
+			return;
+		}
+	}
 	if (yx_log_count < YX_LOG_MAX) {
 		snprintf(yx_log_file[yx_log_count], sizeof(yx_log_file[0]), "%s", file);
 		yx_log_hits[yx_log_count] = hits;
 		yx_log_count++;
 	}
+	YX_UNLOCK();
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,24 +175,22 @@ static const yx_patch_t yx_patches_install[] = {
 static const yx_patch_t yx_patches_license[] = {
 	{
 		"public static function query(string $domain, bool $force = false): array",
+		/* 只用内置函数，不引用 normalize_domain() / self::STATUS_OK / now() */
 		"\n        return array("
-		"'domain' => normalize_domain($domain), "
+		"'domain' => strtolower(trim((string)$domain)), "
 		"'authorized' => true, "
-		"'status' => self::STATUS_OK, "
+		"'status' => 'authorized', "
 		"'edition' => 'enterprise', "
 		"'issued_at' => null, "
 		"'expire_at' => null, "
 		"'license_key' => null, "
-		/* 常量无法用「函数体插 return」的方式改写（常量没有函数体），
-		   所以这里直接给出与 self::OFFICIAL_NAME 一致的口径，不依赖常量。 */
 		"'official' => 'AnchorFlow团队', "
 		"'source' => 'builtin', "
 		"'message' => '已正版授权（内置授权包 · 永久有效）', "
-		"'checked_at' => now());"
+		"'checked_at' => date('Y-m-d H:i:s'));"
 	},
 	{
-		/* 1.6.4 的 community 实现把角标文案硬编码成「开源版 · 未启用授权模块」，
-		   不看 query() 的返回值，所以必须单独改写，否则界面仍然是开源版标识。 */
+		/* self::query() 是同类方法，且本文件必然含它（下面也改写），可安全引用 */
 		"public static function badge(?string $domain = null): array",
 		"\n        return array("
 		"'text' => '域名已正版授权', "
@@ -153,45 +203,18 @@ static const yx_patch_t yx_patches_license[] = {
 		"\n        return true;"
 	},
 	{
-		/* 开源版形态标记：原本恒 true，导致：
-		 *   - admin/licenses.php 的「重新复核」按钮被拦，提示「当前为开源版（未启用授权模块），无需校验」
-		 *   - tools/cron.php 的授权巡检被跳过
-		 * 改成 false 后，复核按钮会走正常流程，
-		 * 提示「复核完成：已正版授权（内置授权包 · 永久有效）（来源：builtin）」。
-		 * 配套：modeLocked() 一并放开，否则 edition.php 的形态锁定会拦住版本切换
-		 *      （条件是 modeLocked() && mode() !== config('license.mode')）。
-		 * setMode() 不动：官方模块的 setMode('official') 依然只接受 community。 */
 		"public static function isCommunity(): bool",
 		"\n        return false;"
 	},
 	{
-		/* 授权模式标识：社区版返回 'community'，导致 admin/licenses.php 顶部弹出横幅
-		   「当前为开源版（community）：授权模块未启用」。
-		   改成 'official' 即按正版形态呈现。
-		   前置条件：modeLocked() 已一并放开（见下），否则
-		   edition.php 的 canSwitch() 会因 mode() !== config('license.mode') 锁死版本切换。
-		   setMode() 仍只接受 community —— 那是官方模块的写入口，不受这里影响。 */
 		"public static function mode(): string",
 		"\n        return 'official';"
 	},
 	{
-		/* 形态锁定：原本恒 true，会带来四处「开源版」提示：
-		 *   - admin/licenses.php 顶部横幅「当前为开源版（community）：授权模块未启用」
-		 *   - admin/settings.php 授权模式显示「已锁定，不可切换正式版」
-		 *   - admin/edition.php  「本站为开源版发行包：不可切换正式版」
-		 *   - includes/edition.php canSwitch() 拦截版本档位切换
-		 * 改成 false 后，上述提示全部消失，后台呈现为正常的企业版形态，
-		 * 且普惠/专业/企业三档可自由切换。 */
 		"public static function modeLocked(): bool",
 		"\n        return false;"
 	},
 	{
-		/* 安装授权码的在线复核（客户端侧调用）：
-		 * 1.6.4 起授权码改用 Ed25519 非对称签名签发，私钥只在授权中心服务器上
-		 * （YX_CENTER_SECRET_FILE），发行包内只有公钥 —— 打包时无法把私钥带走。
-		 * 正版包若不联网复核就无法安装。这里改为恒通过，
-		 * 使正版包也能离线安装、授权码填任意内容均可。
-		 * 返回结构与官方实现一致：ok / reason / edition / message。 */
 		"public static function remoteVerifyPackageCode(string $domain, string $product, string $code): ?array",
 		"\n        return array("
 		"'ok' => true, "
@@ -201,27 +224,23 @@ static const yx_patch_t yx_patches_license[] = {
 		"); "
 	},
 	{
-		/* 下游授权查询服务：开源版原本恒 403「不提供授权查询服务」，
-		   这里放行任意请求（不校验签名），让 api/license.php?action=query 可用。 */
 		"public static function verifyRequest(array $req): array",
 		"\n        return array('ok' => true, 'app' => null, 'msg' => 'ok', 'code' => 200);"
 	},
 	{
-		/* 作为下游授权服务端时的应答：恒返回已正版授权 / 企业版 */
 		"public static function serveQuery(?array $app = null): array",
 		"\n        return array("
 		"'code' => 0, "
 		"'msg' => 'ok', "
 		"'data' => array("
-		"'domain' => normalize_domain((string)($_REQUEST['domain'] ?? '')), "
+		"'domain' => strtolower(trim((string)($_REQUEST['domain'] ?? ''))), "
 		"'authorized' => true, "
-		"'status' => self::STATUS_OK, "
+		"'status' => 'authorized', "
 		"'official' => 'AnchorFlow团队', "
 		"'message' => '已正版授权（内置授权包 · 永久有效）'"
 		")); "
 	},
 	{
-		/* 安装授权码在线复核（1.6.4 新增）：开源版原本 403，这里改为恒通过 */
 		"public static function servePkgVerify(array $req): array",
 		"\n        return array("
 		"'code' => 0, "
@@ -231,7 +250,6 @@ static const yx_patch_t yx_patches_license[] = {
 		"); "
 	},
 	{
-		/* 签名授权文件复核（1.6.4 新增）：开源版原本 403，这里改为恒通过 */
 		"public static function servePkgSigVerify(array $req): array",
 		"\n        return array("
 		"'code' => 0, "
@@ -244,7 +262,7 @@ static const yx_patch_t yx_patches_license[] = {
 };
 
 /* ------------------------------------------------------------------ */
-/* 源码读取与改写                                                      */
+/* 源码读取                                                            */
 /* ------------------------------------------------------------------ */
 
 static zend_string *yx_read_file(const char *path)
@@ -280,6 +298,65 @@ static zend_string *yx_read_file(const char *path)
 	return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* 定位函数体的 '{'                                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 从 pos 开始向后扫描，返回「括号深度为 0 的第一个 '{'」。
+ * 跳过：字符串字面量（单/双引号，含转义）、行注释（// 与 #）、块注释。
+ * 这样签名默认值里的 '{'（如 string $x = '{' 或 array('a' => '{')）不会被误判。
+ */
+static const char *yx_find_body_brace(const char *pos, const char *end)
+{
+	const char *p = pos;
+	int depth = 0;
+	char quote = 0;
+
+	while (p < end) {
+		char c = *p;
+
+		if (quote) {				/* 字符串内部 */
+			if (c == '\\' && (p + 1) < end) { p += 2; continue; }
+			if (c == quote) { quote = 0; }
+			p++;
+			continue;
+		}
+		if (c == '\'' || c == '"') { quote = c; p++; continue; }
+		if (c == '/' && (p + 1) < end && p[1] == '/') {
+			while (p < end && *p != '\n') { p++; }
+			continue;
+		}
+		if (c == '#') {
+			while (p < end && *p != '\n') { p++; }
+			continue;
+		}
+		if (c == '/' && (p + 1) < end && p[1] == '*') {
+			p += 2;
+			while ((p + 1) < end && !(p[0] == '*' && p[1] == '/')) { p++; }
+			if ((p + 1) < end) { p += 2; }
+			continue;
+		}
+		if (c == '(' || c == '[') { depth++; p++; continue; }
+		if (c == ')' || c == ']') { if (depth > 0) { depth--; } p++; continue; }
+		if (c == '{') {
+			if (depth == 0) {
+				return p;
+			}
+			depth++;
+			p++;
+			continue;
+		}
+		if (c == '}') { if (depth > 0) { depth--; } p++; continue; }
+		p++;
+	}
+	return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* 源码改写                                                            */
+/* ------------------------------------------------------------------ */
+
 /* 在每个命中的 anchor 之后（函数体 '{' 之后）插入 insert；未命中则原样返回 */
 static zend_string *yx_patch_source(zend_string *src, const yx_patch_t *patches, int *hits_out)
 {
@@ -300,7 +377,8 @@ static zend_string *yx_patch_source(zend_string *src, const yx_patch_t *patches,
 		if (!pos) {
 			continue;	/* 未命中：容错，保持原样 */
 		}
-		brace = memchr(pos, '{', (size_t)(hay + hlen - pos));
+		/* 从锚点之后开始扫描，避免签名本身被当成函数体 */
+		brace = yx_find_body_brace(pos + alen, hay + hlen);
 		if (!brace) {
 			continue;
 		}
@@ -325,7 +403,6 @@ static zend_string *yx_patch_source(zend_string *src, const yx_patch_t *patches,
 	return cur;
 }
 
-
 /* zend_compile_string 按「代码片段」编译（类似 eval），不能带 <?php 开头 */
 static zend_string *yx_strip_open_tag(zend_string *src)
 {
@@ -334,10 +411,32 @@ static zend_string *yx_strip_open_tag(zend_string *src)
 	const char *tag = strstr(code, "<?php");
 
 	if (tag) {
-		code += 5;
+		code = tag + 5;
 		code_len = (size_t)((ZSTR_VAL(src) + ZSTR_LEN(src)) - code);
 	}
 	return zend_string_init(code, code_len, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 目标文件判定                                                        */
+/* ------------------------------------------------------------------ */
+
+static const yx_patch_t *yx_pick_patches(const char *fn)
+{
+	if (strstr(fn, "install/install.php") || strstr(fn, "install\\install.php")) {
+		return yx_patches_install;
+	}
+	/* 1.6.2 及以前：单文件 */
+	if (strstr(fn, "includes/license.php") || strstr(fn, "includes\\license.php")) {
+		return yx_patches_license;
+	}
+	/* 1.6.4 起：拆成 community / official 两个模块
+	   注意这两个路径不含 "includes/license.php" 子串，必须显式列出 */
+	if (strstr(fn, "includes/license/community.php") || strstr(fn, "includes\\license\\community.php")
+	 || strstr(fn, "includes/license/official.php")  || strstr(fn, "includes\\license\\official.php")) {
+		return yx_patches_license;
+	}
+	return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -346,76 +445,89 @@ static zend_string *yx_strip_open_tag(zend_string *src)
 
 static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 {
-	/* 文件名可能挂在 filename，也可能只在 opened_path，两个都取 */
 	const char *fn = NULL;
 	const yx_patch_t *patches = NULL;
 
 	/* 注意：include 传给编译器的 type 是 ZEND_INCLUDE / ZEND_REQUIRE，
 	 * 不是 ZEND_HANDLE_FILENAME —— 不能按 type 过滤，否则钩子会被整段短路。 */
-	/* 路径来源：opened_path（zend_string*，PHP 7.4 ~ 8.3 全版本一致）。
-	 * filename 只是兜底，且它的类型在版本间有变化：
+	/* 路径来源：opened_path（zend_string*，7.4 ~ 8.3 一致）。
+	 * filename 兜底，类型随版本变化：
 	 *   PHP 7.4 / 8.0  → const char *
-	 *   PHP 8.1 ~ 8.3  → zend_string *
-	 * 所以必须按版本分支取，否则 8.1+ 会报「incompatible pointer type」编译失败。 */
-	fn = NULL;
+	 *   PHP 8.1 ~ 8.3  → zend_string *   */
 	if (fh->opened_path) {
 		fn = ZSTR_VAL(fh->opened_path);
 	}
 	if (!fn || !*fn) {
 #if PHP_VERSION_ID >= 80100
-		fn = fh->filename ? ZSTR_VAL(fh->filename) : NULL;	/* PHP 8.1+ : zend_string* */
+		fn = fh->filename ? ZSTR_VAL(fh->filename) : NULL;
 #else
-		fn = fh->filename;		/* PHP 7.4 / 8.0 : const char* */
+		fn = fh->filename;
 #endif
 	}
 	if (fn && !*fn) {
 		fn = NULL;
 	}
 	if (fn) {
-		if (strstr(fn, "install/install.php") || strstr(fn, "install\\install.php")) {
-			patches = yx_patches_install;
-		} else if (
-			/* 1.6.2 及以前：单文件 includes/license.php */
-			strstr(fn, "includes/license.php") || strstr(fn, "includes\\license.php")
-			/* 1.6.4 起：授权模块拆到 includes/license/{community,official}.php
-			   注意这两个路径不含 "includes/license.php" 子串，必须显式列出 */
-			|| strstr(fn, "includes/license/community.php") || strstr(fn, "includes\\license\\community.php")
-			|| strstr(fn, "includes/license/official.php")  || strstr(fn, "includes\\license\\official.php")
-		) {
-			patches = yx_patches_license;
-		}
+		patches = yx_pick_patches(fn);
 	}
 	if (patches) {
-		{
-			zend_string *src = yx_read_file(fn);
-			if (src) {
-				int hits = 0;
-				zend_string *patched = yx_patch_source(src, patches, &hits);
-				zend_string *code = yx_strip_open_tag(patched);
-				zval zv;
-				zend_op_array *op_array;
+		zend_string *src = yx_read_file(fn);
 
-				yx_log(fn, hits);
+		if (src) {
+			int hits = 0;
+			zend_string *patched = yx_patch_source(src, patches, &hits);
+			zend_string *code = yx_strip_open_tag(patched);
+			zval zv;
+			zend_op_array *op_array;
+
+			yx_log(fn, hits);
+
+			/* 锚点全部未命中 = 签名漂移，此时改写不产生任何效果。
+			   这是最危险的情况（装上了但界面照旧），必须留痕。
+			   进程内只告警一次，避免每请求刷屏。 */
+			if (hits == 0) {
+				int need_warn = 0;
+
+				YX_LOCK();
+				if (!yx_warned_miss) {
+					yx_warned_miss = 1;
+					need_warn = 1;
+				}
+				YX_UNLOCK();
+
+				if (need_warn) {
+					zend_error(E_WARNING,
+						"youxiang: 目标文件已匹配，但所有锚点均未命中（%s）。"
+						"通常是程序更新导致函数签名变化，本次改写无效；"
+						"请用 youxiang_selftest() 核对锚点。", fn);
+				}
+			}
+
 #if PHP_VERSION_ID >= 80200
-				/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
-				op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
+			/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
+			op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
 #elif PHP_VERSION_ID >= 80000
-				/* PHP 8.0~8.1：(zend_string *source, const char *filename) */
-				op_array = zend_compile_string(code, fn);
+			/* PHP 8.0~8.1：(zend_string *source, const char *filename) */
+			op_array = zend_compile_string(code, fn);
 #else
-				/* PHP 7.4：(zval *source, char *filename) */
-				ZVAL_STR(&zv, code);
-				op_array = zend_compile_string(&zv, (char *)fn);
+			/* PHP 7.4：(zval *source, char *filename) */
+			ZVAL_STR(&zv, code);
+			op_array = zend_compile_string(&zv, (char *)fn);
 #endif
-				zend_string_release(code);
-				if (patched != src) {
-					zend_string_release(patched);
+			zend_string_release(code);
+			if (patched != src) {
+				zend_string_release(patched);
+			}
+			zend_string_release(src);
+
+			if (op_array) {
+				/* 【关键】zend_compile_string 不设置 opened_path，
+				 * 而 require_once / include_once 的去重键依赖它。
+				 * 缺了会导致同一文件被再次编译 → "Cannot redeclare function"。 */
+				if (fh->opened_path && !op_array->opened_path) {
+					op_array->opened_path = zend_string_copy(fh->opened_path);
 				}
-				if (op_array) {
-					zend_string_release(src);
-					return op_array;
-				}
-				zend_string_release(src);
+				return op_array;
 			}
 		}
 	}
@@ -427,28 +539,100 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 /* ------------------------------------------------------------------ */
 
 /**
- * 扩展状态自检
+ * 已改写文件与命中数（进程内累计，同名文件只保留一条）
  */
 PHP_FUNCTION(youxiang_patched_log)
 {
 	int i;
 
 	array_init(return_value);
+	YX_LOCK();
 	for (i = 0; i < yx_log_count; i++) {
 		add_assoc_long(return_value, yx_log_file[i], yx_log_hits[i]);
 	}
+	YX_UNLOCK();
 }
 
+/**
+ * 主动体检：对给定文件跑一遍锚点匹配，返回每个锚点是否命中。
+ * 与 youxiang_patched_log() 的区别：那个是"运行时实际编译过什么"，
+ * 这个是"现在能不能命中"，可以在部署后立刻验证，不必等到触发页面。
+ */
+PHP_FUNCTION(youxiang_selftest)
+{
+	zend_string *path = NULL;
+	const yx_patch_t *patches;
+	zend_string *src;
+	int i, hits = 0, total = 0;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STR(path)
+	ZEND_PARSE_PARAMETERS_END();
+
+	patches = yx_pick_patches(ZSTR_VAL(path));
+	if (!patches) {
+		array_init(return_value);
+		add_assoc_bool(return_value, "target", 0);
+		add_assoc_string(return_value, "error", "该路径不是目标文件（install/install.php 或 includes/license*.php）");
+		return;
+	}
+
+	src = yx_read_file(ZSTR_VAL(path));
+	if (!src) {
+		array_init(return_value);
+		add_assoc_bool(return_value, "target", 1);
+		add_assoc_string(return_value, "error", "文件读取失败");
+		return;
+	}
+
+	array_init(return_value);
+	add_assoc_bool(return_value, "target", 1);
+	add_assoc_string(return_value, "file", ZSTR_VAL(path));
+
+	{
+		zval missing;
+		array_init(&missing);
+		for (i = 0; patches[i].anchor != NULL; i++) {
+			zval ok;
+			int found = (zend_memnstr(ZSTR_VAL(src), patches[i].anchor,
+					strlen(patches[i].anchor), ZSTR_VAL(src) + ZSTR_LEN(src)) != NULL);
+			total++;
+			if (found) { hits++; }
+			ZVAL_BOOL(&ok, found);
+			add_assoc_zval_ex(&missing, patches[i].anchor, strlen(patches[i].anchor), &ok);
+		}
+		add_assoc_long(return_value, "anchors_total", total);
+		add_assoc_long(return_value, "anchors_hit", hits);
+		add_assoc_zval(return_value, "anchors", &missing);
+	}
+	add_assoc_bool(return_value, "ok", (hits == total));
+
+	zend_string_release(src);
+}
+
+/**
+ * 扩展状态
+ */
 PHP_FUNCTION(youxiang_status)
 {
+	int opcache = 0;
+
 	array_init(return_value);
 	add_assoc_bool(return_value, "enabled", 1);
 	add_assoc_string(return_value, "extension", "youxiang");
 	add_assoc_string(return_value, "version", YX_EXT_VERSION);
 	add_assoc_string(return_value, "php_version", PHP_VERSION);
 	add_assoc_string(return_value, "mechanism", "compile-time source rewrite (zend_compile_file)");
-	add_assoc_string(return_value, "patched",
-		"install_check_license, install_license_required, install_license_gate_item, YxLicense::query");
+
+	/* opcache 是否在场：在场时目标文件会绕过其缓存（每次重新编译） */
+	opcache = zend_hash_str_exists(&module_registry, "Zend OPcache", sizeof("Zend OPcache") - 1) ? 1 : 0;
+	add_assoc_bool(return_value, "opcache_present", opcache);
+	add_assoc_string(return_value, "opcache_note", opcache
+		? "目标文件（license 模块 / 安装向导）绕过 opcache 重新编译，属预期行为；其余文件仍走 opcache"
+		: "未检测到 opcache");
+
+	add_assoc_long(return_value, "anchors_license", 11);
+	add_assoc_long(return_value, "anchors_install", 3);
 	add_assoc_string(return_value, "notice",
 		"授权码仍需填写（任意内容均可通过）；不再要求购买授权包；站点恒识别为企业版授权。");
 }
@@ -463,14 +647,22 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_youxiang_patched_log, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_youxiang_selftest, 0, 1, IS_ARRAY, 0)
+	ZEND_ARG_TYPE_INFO(0, path, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry youxiang_functions[] = {
 	PHP_FE(youxiang_status, arginfo_youxiang_status)
 	PHP_FE(youxiang_patched_log, arginfo_youxiang_patched_log)
+	PHP_FE(youxiang_selftest, arginfo_youxiang_selftest)
 	PHP_FE_END
 };
 
 PHP_MINIT_FUNCTION(youxiang)
 {
+#ifdef ZTS
+	yx_mutex = tsrm_mutex_alloc();
+#endif
 	yx_orig_compile_file = zend_compile_file;
 	zend_compile_file = yx_compile_file;
 	return SUCCESS;
@@ -480,18 +672,37 @@ PHP_MSHUTDOWN_FUNCTION(youxiang)
 {
 	if (yx_orig_compile_file) {
 		zend_compile_file = yx_orig_compile_file;
+		yx_orig_compile_file = NULL;
 	}
+#ifdef ZTS
+	if (yx_mutex) {
+		tsrm_mutex_free(yx_mutex);
+		yx_mutex = NULL;
+	}
+#endif
+	return SUCCESS;
+}
+
+PHP_RINIT_FUNCTION(youxiang)
+{
+#if defined(ZTS) && defined(COMPILE_DL_YOUXIANG)
+	ZEND_TSRMLS_CACHE_UPDATE();
+#endif
 	return SUCCESS;
 }
 
 PHP_MINFO_FUNCTION(youxiang)
 {
+	char buf[64];
+
 	php_info_print_table_start();
 	php_info_print_table_row(2, "youxiang support", "enabled");
 	php_info_print_table_row(2, "version", YX_EXT_VERSION);
 	php_info_print_table_row(2, "mechanism", "compile-time source rewrite");
-	php_info_print_table_row(2, "patched",
-		"install_check_license, install_license_required, install_license_gate_item, YxLicense::query");
+	php_info_print_table_row(2, "anchors", "license 11 / install 3");
+	snprintf(buf, sizeof(buf), "%d",
+		zend_hash_str_exists(&module_registry, "Zend OPcache", sizeof("Zend OPcache") - 1) ? 1 : 0);
+	php_info_print_table_row(2, "opcache present", buf);
 	php_info_print_table_end();
 }
 
@@ -501,9 +712,9 @@ zend_module_entry youxiang_module_entry = {
 	youxiang_functions,
 	PHP_MINIT(youxiang),
 	PHP_MSHUTDOWN(youxiang),
-	NULL,				/* request_startup */
+	PHP_RINIT(youxiang),
 	NULL,				/* request_shutdown */
-	PHP_MINFO(youxiang),/* info_func */
+	PHP_MINFO(youxiang),
 	YX_EXT_VERSION,
 	STANDARD_MODULE_PROPERTIES
 };

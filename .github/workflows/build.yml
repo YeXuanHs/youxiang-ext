@@ -70,109 +70,6 @@ jobs:
             config.m4
           if-no-files-found: error
 
-  windows:
-    name: Windows DLL (PHP ${{ matrix.php }})
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.1', '8.2', '8.3']
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 准备 PHP 标准包与开发包
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $v = '${{ matrix.php }}'
-          # 归档目录里的包名规则：
-          #   标准包 php-<ver>-nts-Win32-vs16-x64.zip           （含 php.exe / ext/）
-          #   开发包 php-devel-pack-<ver>-nts-Win32-vs16-x64.zip（含 phpize.bat / include/ / lib/）
-          # Windows 编译扩展必须两者合并到同一目录：phpize 与 configure 都需要
-          $idx = (Invoke-WebRequest 'https://windows.php.net/downloads/releases/archives/').Content
-
-          function Pick-Pkg([string]$pattern, [string]$label) {
-              $rx = [regex]($pattern)
-              $all = $rx.Matches($idx) | ForEach-Object { $_.Value } | Sort-Object -Unique
-              if (-not $all) { throw "在归档目录里找不到 $label" }
-              # 按版本号取最大（去掉 -1 后缀再当版本号比较）
-              return ($all | ForEach-Object {
-                  [pscustomobject]@{
-                      File = $_
-                      Key  = [version](($_ -replace '^php(-devel-pack)?-', '' -replace '(-nts)?-Win32-vs16-x64\.zip$', '') -replace '-1$', '')
-                  }
-                } | Sort-Object Key -Descending | Select-Object -First 1).File
-          }
-
-          $stdName  = Pick-Pkg "php-$v\.[0-9]+(?:-1)?-nts-Win32-vs16-x64\.zip"   "PHP $v 标准包"
-          $devName  = Pick-Pkg "php-devel-pack-$v\.[0-9]+(?:-1)?-nts-Win32-vs16-x64\.zip" "PHP $v 开发包"
-          Write-Host "标准包: $stdName"
-          Write-Host "开发包: $devName"
-
-          $base = 'https://windows.php.net/downloads/releases/archives/'
-          Invoke-WebRequest "$base$stdName" -OutFile php-std.zip
-          Invoke-WebRequest "$base$devName" -OutFile php-dev.zip
-
-          # 标准包直接铺开到 C:\php；开发包单独解压后把 phpize.bat / include / lib 合并进去
-          # （注意：标准包自带一个空的 dev/ 占位目录，不能靠“取第一个目录”来定位 devel 根目录）
-          Expand-Archive php-std.zip -DestinationPath C:\php -Force
-          Expand-Archive php-dev.zip -DestinationPath C:\php-dev -Force
-          $devRoot = (Get-ChildItem C:\php-dev -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'phpize.bat') } | Select-Object -First 1)
-          if (-not $devRoot) { throw "开发包里没找到 phpize.bat（目录结构异常）" }
-          Write-Host "开发包根目录: $($devRoot.FullName)"
-          # phpize.bat 会调用 script/phpize.js 生成 configure；build/ 里是 configure 的模板与工具，
-          # 少任何一个都会报「Can not find script file phpize.js」或生成不出 configure
-          foreach ($dir in @('include', 'lib', 'script', 'build')) {
-              $src = Join-Path $devRoot.FullName $dir
-              if (Test-Path $src) {
-                  Copy-Item $src C:\php\ -Recurse -Force
-              } else {
-                  Write-Host "（开发包里没有 $dir，跳过）"
-              }
-          }
-          Copy-Item "$($devRoot.FullName)\phpize.bat" C:\php\ -Force
-          Get-ChildItem C:\php | Select-Object -ExpandProperty Name
-
-      - name: 准备 MSVC 编译环境
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: 编译扩展
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:Path = "C:\php;$env:Path"
-          # phpize.bat 内部是 `SET PHP_BUILDCONF_PATH=%~dp0` ——
-          # 它把自己所在目录当作构建根。所以必须把 phpize.bat / script/ / build/
-          # 复制到扩展源码目录里，在那一层跑 phpize → configure → nmake。
-          $src = (Get-Location).Path
-          $ext = 'C:\php\ext\youxiang'
-          New-Item -ItemType Directory -Path $ext -Force | Out-Null
-          Copy-Item "$src\src"       $ext\ -Recurse -Force
-          Copy-Item "$src\config.m4" $ext\ -Force
-          foreach ($f in @('phpize.bat', 'script', 'build')) {
-              $p = Join-Path 'C:\php' $f
-              if (Test-Path $p) { Copy-Item $p $ext\ -Recurse -Force }
-          }
-          Set-Location $ext
-          php -v
-          & "$ext\phpize.bat"
-          if ($LASTEXITCODE -ne 0) { throw "phpize 失败" }
-          if (-not (Test-Path "$ext\configure.bat")) { throw "configure.bat 未生成" }
-          & "$ext\configure.bat" --enable-youxiang
-          if ($LASTEXITCODE -ne 0) { throw "configure 失败" }
-          nmake
-          if ($LASTEXITCODE -ne 0) { throw "nmake 失败" }
-          Get-ChildItem .\modules\*.dll | Select-Object Name, Length
-
-      - name: 上传 youxiang.dll
-        uses: actions/upload-artifact@v4
-        with:
-          name: youxiang-php${{ matrix.php }}-windows
-          path: C:/php/ext/youxiang/modules/*.dll
-          if-no-files-found: error
-
   e2e:
     name: 端到端（真实程序包 + 扩展）
     runs-on: ubuntu-latest
@@ -378,6 +275,59 @@ jobs:
           exit($ok ? 0 : 1);
           '
           echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"
+
+      - name: 回归 A：require_once 二次加载不重复编译（opened_path 已设置）
+        run: |
+          # zend_compile_string 不设置 op_array->opened_path，
+          # require_once 的去重键依赖它；缺了会二次编译 → "Cannot redeclare class"
+          php -d extension=$PWD/modules/youxiang.so -r '
+          $f = "pkg/includes/license/community.php";
+          require  $f;
+          require_once $f;
+          require_once $f;
+          require_once $f;
+          echo "  同一文件 require + 3 次 require_once：类未重复声明 ✓\n";
+          echo "  class_exists(YxLicense)=" . var_export(class_exists("YxLicense", false), true) . "\n";
+          '
+          echo "✓ opened_path 已正确设置，重复加载被正确去重"
+
+      - name: 回归 B：插入体自包含（不加载 functions.php 也能跑）
+        run: |
+          # 插入体若引用 normalize_domain() / now() / self::STATUS_OK 等目标文件符号，
+          # 不加载 functions.php 时就会 fatal。这里故意不加载，验证真的自包含。
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          $b = YxLicense::badge("demo.local");
+          $_REQUEST["domain"] = "demo.local";
+          $s = YxLicense::serveQuery(null);
+          echo "  无 functions.php：query=" . $r["status"] . "/" . $r["edition"]
+             . " badge=" . $b["text"] . " serveQuery=" . $s["data"]["status"] . "\n";
+          exit(($r["status"] === "authorized" && $r["edition"] === "enterprise"
+              && $b["text"] === "域名已正版授权" && $s["data"]["status"] === "authorized") ? 0 : 1);
+          '
+          echo "✓ 插入体自包含：不依赖 normalize_domain / now / self::STATUS_OK"
+
+      - name: 回归 C：youxiang_selftest() 主动体检
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          $r = youxiang_selftest((getcwd()) . "/pkg/includes/license/community.php");
+          echo "  target=" . var_export($r["target"], true)
+             . " 命中 " . $r["anchors_hit"] . "/" . $r["anchors_total"] . "\n";
+          foreach ($r["anchors"] as $a => $hit) {
+              if (!$hit) { echo "    未命中: " . $a . "\n"; }
+          }
+          exit((!empty($r["ok"]) && $r["anchors_hit"] === 11) ? 0 : 1);
+          '
+          echo "✓ youxiang_selftest() 可主动核对锚点（部署后立刻能验，不必等页面触发）"
+
+      - name: 回归 D：非目标文件不受影响（走原始编译，opcache 照常）
+        run: |
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "pkg/includes/functions.php";
+          echo "  functions.php 正常加载，normalize_domain=" . normalize_domain("WWW.A.com:8080") . "\n";
+          '
+          echo "✓ 非目标文件走原始 compile_file，行为不变"
 
       - name: 校验扩展未破坏 1.6.4 的其余逻辑（社区模块仍可正常加载）
         run: |
