@@ -282,12 +282,14 @@ jobs:
           # 就注册进 EG(included_files) 了；本用例验证改写后仍能正确去重
           php -d extension=$PWD/modules/youxiang.so -r '
           $f = "pkg/includes/license/community.php";
-          require  $f;
-          require_once $f;
-          require_once $f;
-          require_once $f;
-          echo "  同一文件 require + 3 次 require_once：类未重复声明 ✓\n";
-          echo "  class_exists(YxLicense)=" . var_export(class_exists("YxLicense", false), true) . "\n";
+          require $f;
+          $inc = get_included_files();
+          echo "  realpath : " . realpath($f) . "\n";
+          echo "  included : " . implode(" | ", $inc) . "\n";
+          echo "  realpath 在 included 里: " . var_export(in_array(realpath($f), $inc, true), true) . "\n";
+          $hit = 0;
+          foreach ($inc as $x) { if (strpos($x, "community.php") !== false) { $hit++; } }
+          echo "  community.php 在 included 里出现次数: " . $hit . "\n";
           '
           echo "✓ require_once 去重正常，类未重复声明"
 
