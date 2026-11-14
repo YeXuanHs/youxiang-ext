@@ -333,18 +333,26 @@ jobs:
           exit(($r["status"] === "authorized" && $r["edition"] === "enterprise") ? 0 : 1);
           '
 
-          # G2: <? 短标签开头 → 不剥（剥了会把注释里的 <?php 当截断点），回落不改写
-          #     文件本身仍须能正常执行，只是 query 返回原值
+          # G2: HTML 前缀 + <?php（模板文件常见形态，不以 <?php 开头）
+          #     → strip 返回 NULL → 回落原始编译 → 文件照常执行，但未被改写
+          #     注：不用 <? 短标签做用例 —— 现代 PHP 默认 short_open_tag=Off，
+          #     那种文件会整篇被当 HTML 输出，连类都不会定义，测不出「回落是否正常」。
           python3 - <<'PY'
           src = open('pkg/includes/license/community.php').read()
-          src = src.replace("<?php\n", "<?\n", 1)
-          open('/tmp/g2/includes/license/community.php', 'w').write(src)
+          body = src.replace("<?php\n", "", 1)
+          open('/tmp/g2/includes/license/community.php', 'w').write(
+              "<!DOCTYPE html>\n<html><body>before<?php\n" + body)
           PY
-          echo "  [2] <? 短标签开头 → 应回落不改写，但文件能正常执行"
+          echo "  [2] HTML 前缀 + <?php → 应回落不改写，但文件能正常执行"
           php -d extension=$PWD/modules/youxiang.so -r '
+          ob_start();
           require "/tmp/g2/includes/license/community.php";
+          $out = ob_get_clean();
+          if (!class_exists("YxLicense", false)) {
+              echo "     类未定义（回落没生效）" . PHP_EOL; exit(1);
+          }
           $r = YxLicense::query("demo.local", true);
-          echo "     query=" . $r["status"] . "（原值，说明未改写）" . PHP_EOL;
+          echo "     query=" . $r["status"] . "（原值=未改写）  前缀输出长度=" . strlen($out) . PHP_EOL;
           exit(($r["status"] !== "authorized") ? 0 : 1);
           '
 
