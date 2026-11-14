@@ -488,6 +488,22 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 	if (fn) {
 		patches = yx_pick_patches(fn);
 	}
+
+	/* 【关键修复】补上 fh->opened_path
+	 * opened_path 是原始 compile_file 内部（open_file_for_scanning）才设置的，
+	 * 我们替换了 compile_file 且不调用它 → opened_path 恒为 NULL。
+	 * 而 PHP 在 include 处理里用 opened_path 作为 EG(included_files) 的键，
+	 * 键为 NULL 时登记失败 → require_once 认为"没包含过" → 二次编译 →
+	 * "Cannot redeclare class"。有 opcache 时是 opcache 的钩子顺手设了它，
+	 * 所以只有"无 opcache"环境复现。
+	 * 这里用绝对路径补上（与 require_once 的 resolved_path 同口径）。 */
+	if (!fh->opened_path && fn && *fn) {
+		char resolved[MAXPATHLEN];
+		if (expand_filepath(fn, resolved)) {
+			fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
+		}
+	}
+
 	/* 探针：只记录目标文件 */
 	if (fn && patches) {
 		YX_LOCK();
