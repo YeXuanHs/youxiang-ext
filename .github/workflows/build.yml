@@ -285,28 +285,6 @@ jobs:
           '
           echo "✓ 0 命中时完全回落到原始编译路径，文件按原样执行"
 
-      - name: 回归 H：opcache_present 必须反映真实情况
-        run: |
-          # opcache 是 zend_extension，不在 module_registry 里。
-          # 旧实现查 module_registry → 恒 false（哪怕 opcache 正开着）。
-          echo "  [关] opcache.enable_cli=0："
-          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=0 -r '
-          $st = youxiang_status();
-          echo "     opcache_present=" . var_export($st["opcache_present"], true) . PHP_EOL;
-          '
-          echo "  [开] opcache.enable_cli=1："
-          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r '
-          $st = youxiang_status();
-          $has = (bool)$st["opcache_present"];
-          echo "     opcache_present=" . var_export($has, true)
-             . "  note=" . $st["opcache_note"] . PHP_EOL;
-          // opcache 扩展在场时必须报 true —— 这正是旧实现报 false 的场景
-          $loaded = extension_loaded("Zend OPcache");
-          echo "     extension_loaded(Zend OPcache)=" . var_export($loaded, true) . PHP_EOL;
-          exit(($loaded === $has) ? 0 : 1);
-          '
-          echo "✓ opcache_present 与真实加载状态一致"
-
       - name: 回归 G：open tag 只认文件开头；非 <?php 开头一律回落不改写
         run: |
           # 三种构造，验证「能安全剥才改写，不能就回落」
@@ -400,50 +378,6 @@ jobs:
           exit(($loaded === $has) ? 0 : 1);
           '
           echo "✓ opcache_present 与真实加载状态一致"
-
-      - name: 回归 G：open tag 剥除只认文件开头（注释里的 <?php 不得截断）
-        run: |
-          # 旧实现用 strstr 全文件搜第一个 "<?php"：
-          # 若文件用 <? 短标签开头、注释里又写了 <?php 示例，截断点会落到注释中间，
-          # 前半段代码全丢 → compile_string 语法错误。
-          mkdir -p /tmp/cm/includes/license
-          python3 - <<'PY'
-          src = open('pkg/includes/license/community.php').read()
-          marker = "<?php\n"
-          extra = ("/**\n"
-                   " * 用法示例：\n"
-                   " * <?php require_once __DIR__ . '/community.php'; ?>\n"
-                   " * 上面这行只是文档示例，不参与执行。\n"
-                   " */\n")
-          assert marker in src
-          open('/tmp/cm/includes/license/community.php', 'w').write(
-              src.replace(marker, marker + extra, 1))
-          PY
-          echo "  已构造：开头 <?php + 文档注释里含 <?php 示例"
-          php -d extension=$PWD/modules/youxiang.so -r '
-          require "/tmp/cm/includes/license/community.php";
-          $r = YxLicense::query("demo.local", true);
-          echo "  query=" . $r["status"] . "/" . $r["edition"] . PHP_EOL;
-          exit(($r["status"] === "authorized" && $r["edition"] === "enterprise") ? 0 : 1);
-          '
-          echo "  已构造：短标签 <? 开头 + 注释里含 <?php 示例（旧实现会截断到这里）"
-          python3 - <<'PY'
-          src = open('pkg/includes/license/community.php').read()
-          # 把开头的 <?php 换成 <?
-          src = src.replace("<?php\n", "<?\n", 1)
-          extra = ("/**\n * 示例：<?php echo 1; ?>\n */\n")
-          i = src.find("\n") + 1
-          open('/tmp/cm/includes/license/short.php', 'w').write(src[:i] + extra + src[i:])
-          PY
-          mkdir -p /tmp/cms/includes/license
-          cp /tmp/cm/includes/license/short.php /tmp/cms/includes/license/community.php
-          php -d extension=$PWD/modules/youxiang.so -r '
-          require "/tmp/cms/includes/license/community.php";
-          $r = YxLicense::query("demo.local", true);
-          echo "  短标签文件 query=" . $r["status"] . PHP_EOL;
-          exit($r["status"] === "authorized" ? 0 : 1);
-          '
-          echo "✓ open tag 只剥文件开头：注释里的 <?php 不会造成截断"
 
       - name: 回归 D：非目标文件不受影响（走原始编译，opcache 照常）
         run: |
