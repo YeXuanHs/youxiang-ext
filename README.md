@@ -182,6 +182,7 @@ youxiang: 目标文件已匹配，但所有锚点均未命中（/var/www/.../com
 | opcache 优化缺席 | 见上文「opcache 交互」：目标文件不走 opcache，失去优化与 JIT |
 | 目标文件每次重新编译 | 属上一条的直接后果，文件很小，实测可忽略 |
 | 锚点出现在注释里（极低概率） | 匹配器只找第一处命中，若签名先出现在文档注释中，从注释内部起扫会判错位置。当前锚点后无此情况；根治需整文件状态机扫描 |
+| `<?=` / `<?` 短标签开头 | `yx_strip_open_tag()` 只保证「文件开头是 `<?php`（允许 BOM）」正确；其余（`<?=` 的 echo 语义、`<?` 短标签）一律返回 NULL 并**回落原始编译** —— 不改写、不报错、文件照常运行。目标文件必然以 `<?php` 开头，走不到此分支 |
 | ZTS 构建 | 已补 `ZEND_TSRMLS_CACHE_DEFINE()`，ZTS + 动态编译可链接；CI 为 NTS 环境，另有静态宏配对检查兜底 |
 | `include 'license.php'` 走 include_path | `expand_filepath()` 按进程 cwd 解析相对路径；若靠 include_path 找到目标文件，算出的 `opened_path` 可能与 PHP 内部的 resolved_path 不一致。目标文件通常是 `require_once __DIR__ . '/...'` 绝对路径，触发不了 |
 | 32 位系统大文件 | `yx_read_file` 的 `ftell()` 返回 `long`，>2GB 会溢出。目标文件 8KB，不涉及 |
