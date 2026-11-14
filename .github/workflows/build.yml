@@ -276,10 +276,10 @@ jobs:
           '
           echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"
 
-      - name: 回归 A：require_once 二次加载不重复编译（opened_path 已设置）
+      - name: 回归 A：require_once 二次加载正常去重
         run: |
-          # zend_compile_string 不设置 op_array->opened_path，
-          # require_once 的去重键依赖它；缺了会二次编译 → "Cannot redeclare class"
+          # 去重键是 zend_file_handle.opened_path，PHP 在调用 compile_file 之前
+          # 就注册进 EG(included_files) 了；本用例验证改写后仍能正确去重
           php -d extension=$PWD/modules/youxiang.so -r '
           $f = "pkg/includes/license/community.php";
           require  $f;
@@ -289,7 +289,7 @@ jobs:
           echo "  同一文件 require + 3 次 require_once：类未重复声明 ✓\n";
           echo "  class_exists(YxLicense)=" . var_export(class_exists("YxLicense", false), true) . "\n";
           '
-          echo "✓ opened_path 已正确设置，重复加载被正确去重"
+          echo "✓ require_once 去重正常，类未重复声明"
 
       - name: 回归 B：插入体自包含（不加载 functions.php 也能跑）
         run: |
