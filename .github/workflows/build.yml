@@ -290,7 +290,15 @@ jobs:
           php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r "$P" "$F"
           echo "  [5] 对照：无扩展 require + require_once x2"
           php -d opcache.enable=0 -d opcache.enable_cli=0 -r 'require $argv[1]; require_once $argv[1]; require_once $argv[1]; echo "     无重复声明" . PHP_EOL;' "$F" || echo "     失败（PHP 自身行为）"
-          echo "  [6] 有扩展 require + require_once x2"
+          echo "  [6] 探针：进入钩子时 included_files 条目数"
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r '
+          require $argv[1];
+          $st = youxiang_status();
+          foreach ($st["probes"] as $p) {
+              echo "     " . basename($p["file"]) . " -> included_at_entry=" . $p["included_at_entry"] . PHP_EOL;
+          }
+          ' "$F" || echo "     probe failed"
+          echo "  [7] 有扩展 require + require_once x2"
           php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r 'require $argv[1]; require_once $argv[1]; require_once $argv[1]; echo "     无重复声明" . PHP_EOL;' "$F" || echo "     ★ 有扩展时失败（需修复）"
       - name: 回归 B：插入体自包含（不加载 functions.php 也能跑）
         run: |

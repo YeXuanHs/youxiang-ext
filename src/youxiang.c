@@ -445,6 +445,13 @@ static const yx_patch_t *yx_pick_patches(const char *fn)
 /* 编译钩子                                                            */
 /* ------------------------------------------------------------------ */
 
+/* 诊断：记录进入钩子时 included_files 的条目数，用来判定
+ * PHP 是在调用 compile_file 之前还是之后注册的 */
+#define YX_PROBE_MAX 8
+static char yx_probe_file[YX_PROBE_MAX][96];
+static int  yx_probe_included[YX_PROBE_MAX];
+static int  yx_probe_n = 0;
+
 static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 {
 	const char *fn = NULL;
@@ -471,6 +478,16 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 	}
 	if (fn) {
 		patches = yx_pick_patches(fn);
+	}
+	/* 探针：只记录目标文件 */
+	if (fn && patches) {
+		YX_LOCK();
+		if (yx_probe_n < YX_PROBE_MAX) {
+			snprintf(yx_probe_file[yx_probe_n], sizeof(yx_probe_file[0]), "%s", fn);
+			yx_probe_included[yx_probe_n] = (int)zend_hash_num_elements(&EG(included_files));
+			yx_probe_n++;
+		}
+		YX_UNLOCK();
 	}
 	if (patches) {
 		zend_string *src = yx_read_file(fn);
@@ -632,6 +649,22 @@ PHP_FUNCTION(youxiang_status)
 	add_assoc_string(return_value, "opcache_note", opcache
 		? "目标文件（license 模块 / 安装向导）绕过 opcache 重新编译，属预期行为；其余文件仍走 opcache"
 		: "未检测到 opcache");
+
+	{
+		zval probes;
+		int i;
+		array_init(&probes);
+		YX_LOCK();
+		for (i = 0; i < yx_probe_n; i++) {
+			zval row;
+			array_init(&row);
+			add_assoc_string(&row, "file", yx_probe_file[i]);
+			add_assoc_long(&row, "included_at_entry", yx_probe_included[i]);
+			add_next_index_zval(&probes, &row);
+		}
+		YX_UNLOCK();
+		add_assoc_zval(return_value, "probes", &probes);
+	}
 
 	add_assoc_long(return_value, "anchors_license", 11);
 	add_assoc_long(return_value, "anchors_install", 3);
