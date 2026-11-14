@@ -298,7 +298,8 @@ jobs:
               echo "     " . basename($p["file"]) . " -> included_at_entry=" . $p["included_at_entry"] . PHP_EOL;
           }
           echo "     add_before=" . $st["add_before"] . " add_after=" . $st["add_after"]
-             . " add_ret=" . $st["add_ret"] . " 最终 included=" . count(get_included_files()) . PHP_EOL;
+             . " add_ret=" . $st["add_ret"] . " has_opened_path=" . $st["has_opened_path"]
+             . " 最终 included=" . count(get_included_files()) . PHP_EOL;
           ' "$F" || echo "     probe failed"
           echo "  [7] 有扩展 require + require_once x2"
           php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r 'require $argv[1]; require_once $argv[1]; require_once $argv[1]; echo "     无重复声明" . PHP_EOL;' "$F" || echo "     ★ 有扩展时失败（需修复）"

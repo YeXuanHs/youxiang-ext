@@ -458,6 +458,8 @@ static int  yx_probe_n = 0;
 static int  yx_probe_add_before = -1;
 static int  yx_probe_add_after  = -1;
 static int  yx_probe_add_ret    = -1;
+static int  yx_probe_has_opened = -1;
+static int  yx_probe_has_fname  = -1;
 
 static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 {
@@ -492,6 +494,12 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 		if (yx_probe_n < YX_PROBE_MAX) {
 			snprintf(yx_probe_file[yx_probe_n], sizeof(yx_probe_file[0]), "%s", fn);
 			yx_probe_included[yx_probe_n] = (int)zend_hash_num_elements(&EG(included_files));
+			yx_probe_has_opened = (fh->opened_path != NULL);
+#if PHP_VERSION_ID >= 80100
+			yx_probe_has_fname = (fh->filename != NULL);
+#else
+			yx_probe_has_fname = (fh->filename != NULL && *fh->filename != '\0');
+#endif
 			yx_probe_n++;
 		}
 		YX_UNLOCK();
@@ -688,6 +696,8 @@ PHP_FUNCTION(youxiang_status)
 	add_assoc_long(return_value, "add_before", yx_probe_add_before);
 	add_assoc_long(return_value, "add_after",  yx_probe_add_after);
 	add_assoc_long(return_value, "add_ret",    yx_probe_add_ret);
+	add_assoc_long(return_value, "has_opened_path", yx_probe_has_opened);
+	add_assoc_long(return_value, "has_filename",    yx_probe_has_fname);
 
 	add_assoc_long(return_value, "anchors_license", 11);
 	add_assoc_long(return_value, "anchors_install", 3);
