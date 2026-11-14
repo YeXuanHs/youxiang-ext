@@ -114,6 +114,27 @@ Array
 
 **输出为空**说明目标文件没有被命中（通常是站点目录不是 `install/install.php` / 授权模块文件，或函数签名与预期不同）——此时扩展不生效，但也不会影响站点正常运行。
 
+### 主动体检（推荐）
+
+`youxiang_patched_log()` 只能看到「运行时实际编译过什么」；想在**部署后立刻**确认锚点是否还对得上，用：
+
+```bash
+php -r 'print_r(youxiang_selftest("/var/www/你的站点/includes/license/community.php"));'
+```
+
+返回里 `anchors_hit` / `anchors_total` 分别是命中数与总数（1.6.4 应为 11/11），`anchors` 会逐个列出每条签名是否命中，`ok` 为总判定。
+
+### 锚点漂移会告警
+
+如果程序升级后函数签名变了，扩展会匹配到目标文件但一个锚点都插不进去——这是最危险的情况（装上了但界面照旧）。此时扩展会写一条 `E_WARNING` 到 PHP 错误日志（**每个进程只写一次**）：
+
+```
+youxiang: 目标文件已匹配，但所有锚点均未命中（/var/www/.../community.php）。
+通常是程序更新导致函数签名变化，本次改写无效；请用 youxiang_selftest() 核对锚点。
+```
+
+看到这条就该核对签名了，别以为「没报错就是好的」。
+
 ## 卸载 / 停用
 
 把 `php.ini` 里的 `extension=youxiang.so` 注释掉，重启 PHP 即可。扩展不写任何文件、不建任何表，卸载后不影响已装站点的数据。
@@ -121,8 +142,9 @@ Array
 ## 注意事项
 
 - 扩展在 `php.ini` 里是**全局生效**的，等于该服务器上所有 PHP 站点都不再校验授权。多站环境建议改用站点目录下的 `user_ini`（`.user.ini`）单独加载，或只在需要的站点启用。
-- 扩展只改写「运行期行为」，**不改动磁盘上的任何文件**；但被改写的文件不会进入 opcache 缓存，每次请求会重新编译（约 60KB，开销毫秒级）。介意的话可在该站点设置 `opcache.enable=0`。
-- 扩展**不含任何调试输出**，不会往日志里写东西。
+- 扩展只改写「运行期行为」，**不改动磁盘上的任何文件**。
+- **opcache 交互**：opcache 作为 `zend_extension` 先于本扩展初始化，因此本扩展的钩子处在最外层。命中目标文件时直接走 `zend_compile_string` 编译，**不经过 opcache**——改写照常生效，但这两个文件失去字节码缓存与 JIT，每次请求重新编译（license 模块约 8KB，毫秒级）。未命中的文件仍走原始 `compile_file`，opcache 照常工作。用 `php -r 'print_r(youxiang_status());'` 可看 `opcache_present` 字段。
+- 扩展**不含任何调试输出**，正常运行时不写日志（只有锚点全部未命中时写一条 `E_WARNING`）。
 
 ## 原理
 
@@ -148,6 +170,15 @@ Array
 | 同上 | `servePkgSigVerify()` | 恒 ok + enterprise（签名授权文件复核） |
 
 匹配按函数签名字面量进行，未命中即跳过该处（保持原有行为，不会导致报错）。
+
+### 已知局限
+
+| 局限 | 说明 |
+|---|---|
+| 只拦文件，不拦 `eval` | 钩的是 `zend_compile_file`；`eval()` / `create_function()` 走 `zend_compile_string`，不在覆盖范围内。实际影响很小：授权模块不会以字符串形式被 eval |
+| 依赖函数签名 | 官方改动签名（哪怕只是默认值或多一个空格）就会 miss。已有 `E_WARNING` 告警 + `youxiang_selftest()` 兜底 |
+| opcache 优化缺席 | 见上文「opcache 交互」：目标文件不走 opcache，失去优化与 JIT |
+| 目标文件每次重新编译 | 属上一条的直接后果，文件很小，实测可忽略 |
 
 ### 为什么 1.6.4 需要额外改写 `badge()` 与 `isAuthorized()`
 
