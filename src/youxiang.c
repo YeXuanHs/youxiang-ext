@@ -449,18 +449,6 @@ static const yx_patch_t *yx_pick_patches(const char *fn)
 /* 编译钩子                                                            */
 /* ------------------------------------------------------------------ */
 
-/* 诊断：记录进入钩子时 included_files 的条目数，用来判定
- * PHP 是在调用 compile_file 之前还是之后注册的 */
-#define YX_PROBE_MAX 8
-static char yx_probe_file[YX_PROBE_MAX][96];
-static int  yx_probe_included[YX_PROBE_MAX];
-static int  yx_probe_n = 0;
-static int  yx_probe_add_before = -1;
-static int  yx_probe_add_after  = -1;
-static int  yx_probe_add_ret    = -1;
-static int  yx_probe_has_opened = -1;
-static int  yx_probe_has_fname  = -1;
-
 static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 {
 	const char *fn = NULL;
@@ -504,55 +492,6 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 		}
 	}
 
-	/* 探针：只记录目标文件 */
-	if (fn && patches) {
-		YX_LOCK();
-		if (yx_probe_n < YX_PROBE_MAX) {
-			snprintf(yx_probe_file[yx_probe_n], sizeof(yx_probe_file[0]), "%s", fn);
-			yx_probe_included[yx_probe_n] = (int)zend_hash_num_elements(&EG(included_files));
-			yx_probe_has_opened = (fh->opened_path != NULL);
-#if PHP_VERSION_ID >= 80100
-			yx_probe_has_fname = (fh->filename != NULL);
-#else
-			yx_probe_has_fname = (fh->filename != NULL && *fh->filename != '\0');
-#endif
-			yx_probe_n++;
-		}
-		YX_UNLOCK();
-	}
-	if (patches) {
-		zend_string *src = yx_read_file(fn);
-
-		if (src) {
-			int hits = 0;
-			zend_string *patched = yx_patch_source(src, patches, &hits);
-			zend_string *code = yx_strip_open_tag(patched);
-			zval zv;
-			zend_op_array *op_array;
-
-			yx_log(fn, hits);
-
-			/* 锚点全部未命中 = 签名漂移，此时改写不产生任何效果。
-			   这是最危险的情况（装上了但界面照旧），必须留痕。
-			   进程内只告警一次，避免每请求刷屏。 */
-			if (hits == 0) {
-				int need_warn = 0;
-
-				YX_LOCK();
-				if (!yx_warned_miss) {
-					yx_warned_miss = 1;
-					need_warn = 1;
-				}
-				YX_UNLOCK();
-
-				if (need_warn) {
-					zend_error(E_WARNING,
-						"youxiang: 目标文件已匹配，但所有锚点均未命中（%s）。"
-						"通常是程序更新导致函数签名变化，本次改写无效；"
-						"请用 youxiang_selftest() 核对锚点。", fn);
-				}
-			}
-
 #if PHP_VERSION_ID >= 80200
 			/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
 			op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
@@ -580,15 +519,7 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 				 * 后果：require_once 认为"没包含过"，二次编译 → Cannot redeclare。
 				 * 因此这里以 fh->opened_path 为键补登记一次（幂等，已存在则返回 false）。 */
 				if (fh->opened_path) {
-					int b, a, r;
-					YX_LOCK();
-					b = (int)zend_hash_num_elements(&EG(included_files));
-					r = (int)zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
-					a = (int)zend_hash_num_elements(&EG(included_files));
-					yx_probe_add_before = b;
-					yx_probe_add_after  = a;
-					yx_probe_add_ret    = r;
-					YX_UNLOCK();
+					zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
 				}
 				return op_array;
 			}
@@ -693,27 +624,6 @@ PHP_FUNCTION(youxiang_status)
 	add_assoc_string(return_value, "opcache_note", opcache
 		? "目标文件（license 模块 / 安装向导）绕过 opcache 重新编译，属预期行为；其余文件仍走 opcache"
 		: "未检测到 opcache");
-
-	{
-		zval probes;
-		int i;
-		array_init(&probes);
-		YX_LOCK();
-		for (i = 0; i < yx_probe_n; i++) {
-			zval row;
-			array_init(&row);
-			add_assoc_string(&row, "file", yx_probe_file[i]);
-			add_assoc_long(&row, "included_at_entry", yx_probe_included[i]);
-			add_next_index_zval(&probes, &row);
-		}
-		YX_UNLOCK();
-		add_assoc_zval(return_value, "probes", &probes);
-	}
-	add_assoc_long(return_value, "add_before", yx_probe_add_before);
-	add_assoc_long(return_value, "add_after",  yx_probe_add_after);
-	add_assoc_long(return_value, "add_ret",    yx_probe_add_ret);
-	add_assoc_long(return_value, "has_opened_path", yx_probe_has_opened);
-	add_assoc_long(return_value, "has_filename",    yx_probe_has_fname);
 
 	add_assoc_long(return_value, "anchors_license", 11);
 	add_assoc_long(return_value, "anchors_install", 3);
