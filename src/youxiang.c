@@ -43,12 +43,16 @@
  *   签名里的默认值可能含 '{'（如 string $code = '{'），必须按括号深度扫描，
  *   并跳过字符串字面量与注释。见 yx_find_body_brace()。
  *
- * 【C】不需要设置 opened_path（原以为是坑，查证后不是）
- *   zend_op_array 在 PHP 7.4 ~ 8.3 都没有 opened_path 成员；
- *   require_once 的去重键是 zend_file_handle.opened_path，且注册发生在
- *   调用 zend_compile_file **之前**（zend_execute.c 里先
- *   zend_hash_add_empty_element(&EG(included_files), fh->opened_path)
- *   再调用 compile_file）。因此与钩子返回的 op_array 无关，无需补设。
+ * 【C】必须主动登记 EG(included_files)
+ *   zend_op_array 在 7.4 ~ 8.3 都没有 opened_path 成员，所以不能靠它去重。
+ *   真实的去重键是 zend_file_handle.opened_path，但**登记时机随环境变化**：
+ *     · 无 opcache：登记发生在 zend_compile_file 之后；我们返回自己的
+ *       op_array 后那段代码不再执行 → 文件没被登记 → require_once
+ *       认为未包含过 → 二次编译 → "Cannot redeclare class"。
+ *     · 有 opcache：opcache 钩子内部会补登记，看起来正常。
+ *   因此返回 op_array 前必须自己补一刀：
+ *     zend_hash_add_empty_element(&EG(included_files), fh->opened_path)
+ *   （幂等：已存在时返回 false，无副作用）
  *
  * 【D】opcache 交互
  *   opcache 是 zend_extension，MINIT 早于本模块，因此 yx_orig_compile_file
@@ -540,12 +544,17 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 			zend_string_release(src);
 
 			if (op_array) {
-				/* 关于 opened_path：zend_op_array 在 7.4 ~ 8.3 都没有该成员，
-				 * require_once 的去重键是 zend_file_handle.opened_path，
-				 * 且 PHP 在调用 zend_compile_file **之前**就已用
-				 * zend_hash_add_empty_element(&EG(included_files), fh->opened_path)
-				 * 注册过了 —— 与我们返回什么 op_array 无关。
-				 * 因此这里不需要（也无法）设置 opened_path。 */
+				/* 【必须主动登记 included_files】
+				 * 实测（探针验证）：不同环境下 PHP 把本文件登记进
+				 * EG(included_files) 的时机不一致 ——
+				 *   · 无 opcache 时，登记发生在 zend_compile_file 之后，
+				 *     而我们返回自己的 op_array 后该路径不再执行 → 登记丢失；
+				 *   · 有 opcache 时，opcache 的钩子内部会补上，所以看起来正常。
+				 * 后果：require_once 认为"没包含过"，二次编译 → Cannot redeclare。
+				 * 因此这里以 fh->opened_path 为键补登记一次（幂等，已存在则返回 false）。 */
+				if (fh->opened_path) {
+					zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
+				}
 				return op_array;
 			}
 		}
