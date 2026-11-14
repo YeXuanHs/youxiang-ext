@@ -455,6 +455,9 @@ static const yx_patch_t *yx_pick_patches(const char *fn)
 static char yx_probe_file[YX_PROBE_MAX][96];
 static int  yx_probe_included[YX_PROBE_MAX];
 static int  yx_probe_n = 0;
+static int  yx_probe_add_before = -1;
+static int  yx_probe_add_after  = -1;
+static int  yx_probe_add_ret    = -1;
 
 static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 {
@@ -553,7 +556,15 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 				 * 后果：require_once 认为"没包含过"，二次编译 → Cannot redeclare。
 				 * 因此这里以 fh->opened_path 为键补登记一次（幂等，已存在则返回 false）。 */
 				if (fh->opened_path) {
-					zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
+					int b, a, r;
+					YX_LOCK();
+					b = (int)zend_hash_num_elements(&EG(included_files));
+					r = (int)zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
+					a = (int)zend_hash_num_elements(&EG(included_files));
+					yx_probe_add_before = b;
+					yx_probe_add_after  = a;
+					yx_probe_add_ret    = r;
+					YX_UNLOCK();
 				}
 				return op_array;
 			}
@@ -674,6 +685,9 @@ PHP_FUNCTION(youxiang_status)
 		YX_UNLOCK();
 		add_assoc_zval(return_value, "probes", &probes);
 	}
+	add_assoc_long(return_value, "add_before", yx_probe_add_before);
+	add_assoc_long(return_value, "add_after",  yx_probe_add_after);
+	add_assoc_long(return_value, "add_ret",    yx_probe_add_ret);
 
 	add_assoc_long(return_value, "anchors_license", 11);
 	add_assoc_long(return_value, "anchors_install", 3);
