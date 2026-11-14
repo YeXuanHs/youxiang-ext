@@ -419,15 +419,30 @@ static zend_string *yx_patch_source(zend_string *src, const yx_patch_t *patches,
 
 /* zend_compile_string 按「代码片段」编译（类似 eval），不能带 <?php 开头 */
 /*
- * 剥掉开头的 <?php。
+ * 剥掉开头的 <?php，返回剩余代码；无法确定能安全剥除时返回 NULL。
  *
- * 【绝不能】用 strstr 做全文件搜索：文档注释或字符串里一旦出现 "<?php"
- * （例如 /** 用法：<?php require 'x.php'; *\/ 这种示例），截断点会落到
- * 文件中间 —— 前半段代码全部丢失，zend_compile_string 直接语法错误。
- * 目标文件的内容由发行方决定，我们控制不了它会不会写这种示例。
+ * 只认一种形态：「文件开头是 <?php」（允许 UTF-8 BOM）。理由：
  *
- * 只认「文件开头」（允许 UTF-8 BOM）。开头没有 open tag 时原样返回，
- * 交给编译器按 AFTER_OPEN_TAG 语义处理 —— 报错也比悄悄丢代码好。
+ *  1) 绝不用 strstr 全文件搜索。文档注释或字符串里一旦出现 "<?php"
+ *     （如 /** 用法：<?php require 'x.php'; *\/ ），截断点会落到文件中间，
+ *     前半段代码全部丢失 → zend_compile_string 直接 bailout。
+ *
+ *  2) 不处理 <?= 与 <?。<?= 的语义是「open tag 本身就是 echo」，
+ *     不是「进入脚本态」：剥掉 <?= 后剩下的 "$x ?>" 会被当成
+ *     「求值但丢弃结果」的表达式语句，echo 语义丢失。
+ *     要正确处理得改写成 "echo $x;" 并处理中间穿插的 HTML 段，
+ *     等于重新实现一遍 lexer，成本远大于收益。
+ *     <? 短标签同理。
+ *
+ *  3) 返回 NULL 时调用方必须放弃改写、回落到原始 compile_file。
+ *     之前在无 open tag 时「原样返回」，再交给
+ *     ZEND_COMPILE_POSITION_AFTER_OPEN_TAG 编译是自相矛盾的：
+ *     AFTER_OPEN_TAG 表示源码已在 open tag 之后、lexer 从
+ *     ST_IN_SCRIPTING 开始，此时开头的 "<?php" 会被当作
+ *     "< ? php" 三个 token → 语法错误。宽容返回变成了「必挂」。
+ *
+ * 目标文件必然以 <?php 开头，走不到 NULL 分支；保留它是为了让
+ * 「格式变了」时降级为「不改写但正常执行」，而不是改坏或崩溃。
  */
 static zend_string *yx_strip_open_tag(zend_string *src)
 {
@@ -442,15 +457,10 @@ static zend_string *yx_strip_open_tag(zend_string *src)
 		p += 3;
 	}
 
-	if ((size_t)(end - p) >= 5 && strncmp(p, "<?php", 5) == 0) {
-		p += 5;
-	} else if ((size_t)(end - p) >= 3 && strncmp(p, "<?=", 3) == 0) {
-		p += 3;
-	} else if ((size_t)(end - p) >= 2 && strncmp(p, "<?", 2) == 0) {
-		p += 2;
-	} else {
-		return zend_string_init(ZSTR_VAL(src), ZSTR_LEN(src), 0);
+	if ((size_t)(end - p) < 5 || strncmp(p, "<?php", 5) != 0) {
+		return NULL;	/* 不是 <?php 开头：交给调用方回落 */
 	}
+	p += 5;
 
 	/* PHP 会把 open tag 后紧跟的一个换行吞掉，这里保持一致 */
 	if (p < end && *p == '\r') {
@@ -608,32 +618,44 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 				return yx_orig_compile_file(fh, type);
 			}
 
-			/* 确实要改写时才补 opened_path：
-			 * 它本由原始 compile_file 内部（open_file_for_scanning）设置，
-			 * 我们替换了 compile_file 且不调用它 → 恒为 NULL；
-			 * 而 PHP 用 opened_path 作 EG(included_files) 的键，
-			 * 键为 NULL 时登记失败 → require_once 二次编译 →
-			 * "Cannot redeclare class"。
-			 * 只在命中路径上补，避免干扰每一条普通 include。 */
-			if (!fh->opened_path && fn && *fn) {
-				char resolved[MAXPATHLEN];
-				if (expand_filepath(fn, resolved)) {
-					fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
-				}
-			}
-			/* 重取一次：opened_path 是绝对路径，而 fn 可能原本取自
-			 * fh->filename（主脚本被直接编译时是相对路径）。
-			 * 传给 zend_compile_string 的 filename 决定目标文件里的
-			 * __DIR__ / __FILE__ —— 用相对路径会让 __DIR__ 变成 "."，
-			 * 目标文件里若有 require_once __DIR__ . '/...' 就断链。 */
-			if (fh->opened_path) {
-				fn = ZSTR_VAL(fh->opened_path);
-			}
-
 			{
 				zend_string *code = yx_strip_open_tag(patched);
 				zval zv;
 				zend_op_array *op_array;
+
+				/* 无法安全剥 open tag（不是 <?php 开头，例如 <?= 或 <? 短标签）
+				 * → 放弃改写，回落原始编译路径。
+				 * 宁可不改写，也不能把 <?= 的 echo 语义剥丢、或把
+				 * 「原样返回的代码」当 AFTER_OPEN_TAG 编译（必挂）。 */
+				if (!code) {
+					if (patched != src) {
+						zend_string_release(patched);
+					}
+					zend_string_release(src);
+					return yx_orig_compile_file(fh, type);
+				}
+
+					/* 确实要改写时才补 opened_path：
+					 * 它本由原始 compile_file 内部（open_file_for_scanning）设置，
+					 * 我们替换了 compile_file 且不调用它 → 恒为 NULL；
+					 * 而 PHP 用 opened_path 作 EG(included_files) 的键，
+					 * 键为 NULL 时登记失败 → require_once 二次编译 →
+					 * "Cannot redeclare class"。
+					 * 只在命中路径上补，避免干扰每一条普通 include。 */
+					if (!fh->opened_path && fn && *fn) {
+						char resolved[MAXPATHLEN];
+						if (expand_filepath(fn, resolved)) {
+							fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
+						}
+					}
+					/* 重取一次：opened_path 是绝对路径，而 fn 可能原本取自
+					 * fh->filename（主脚本被直接编译时是相对路径）。
+					 * 传给 zend_compile_string 的 filename 决定目标文件里的
+					 * __DIR__ / __FILE__ —— 用相对路径会让 __DIR__ 变成 "."，
+					 * 目标文件里若有 require_once __DIR__ . '/...' 就断链。 */
+					if (fh->opened_path) {
+						fn = ZSTR_VAL(fh->opened_path);
+					}
 
 #if PHP_VERSION_ID >= 80200
 				/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */

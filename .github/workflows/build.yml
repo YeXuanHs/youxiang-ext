@@ -307,6 +307,83 @@ jobs:
           '
           echo "✓ opcache_present 与真实加载状态一致"
 
+      - name: 回归 G：open tag 只认文件开头；非 <?php 开头一律回落不改写
+        run: |
+          # 三种构造，验证「能安全剥才改写，不能就回落」
+          mkdir -p /tmp/g1/includes/license /tmp/g2/includes/license /tmp/g3/includes/license
+
+          # G1: <?php 开头 + 注释里含 <?php 示例 → 必须正常改写（不截断）
+          python3 - <<'PY'
+          src = open('pkg/includes/license/community.php').read()
+          marker = "<?php\n"
+          extra = ("/**\n"
+                   " * 用法示例：\n"
+                   " * <?php require_once __DIR__ . '/community.php'; ?>\n"
+                   " * 上面这行只是文档示例。\n"
+                   " */\n")
+          assert marker in src
+          open('/tmp/g1/includes/license/community.php', 'w').write(
+              src.replace(marker, marker + extra, 1))
+          PY
+          echo "  [1] <?php 开头 + 注释含 <?php 示例 → 应改写"
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "/tmp/g1/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          echo "     query=" . $r["status"] . "/" . $r["edition"] . PHP_EOL;
+          exit(($r["status"] === "authorized" && $r["edition"] === "enterprise") ? 0 : 1);
+          '
+
+          # G2: <? 短标签开头 → 不剥（剥了会把注释里的 <?php 当截断点），回落不改写
+          #     文件本身仍须能正常执行，只是 query 返回原值
+          python3 - <<'PY'
+          src = open('pkg/includes/license/community.php').read()
+          src = src.replace("<?php\n", "<?\n", 1)
+          open('/tmp/g2/includes/license/community.php', 'w').write(src)
+          PY
+          echo "  [2] <? 短标签开头 → 应回落不改写，但文件能正常执行"
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "/tmp/g2/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          echo "     query=" . $r["status"] . "（原值，说明未改写）" . PHP_EOL;
+          exit(($r["status"] !== "authorized") ? 0 : 1);
+          '
+
+          # G3: 带 UTF-8 BOM 的 <?php 开头 → 应正常改写
+          python3 - <<'PY'
+          src = open('pkg/includes/license/community.php').read()
+          open('/tmp/g3/includes/license/community.php', 'w', encoding='utf-8').write("\ufeff" + src)
+          PY
+          echo "  [3] UTF-8 BOM + <?php 开头 → 应改写"
+          php -d extension=$PWD/modules/youxiang.so -r '
+          require "/tmp/g3/includes/license/community.php";
+          $r = YxLicense::query("demo.local", true);
+          echo "     query=" . $r["status"] . PHP_EOL;
+          exit($r["status"] === "authorized" ? 0 : 1);
+          '
+          echo "✓ open tag 只认文件开头；<? 短标签回落不改写、文件照常执行"
+
+      - name: 回归 H：opcache_present 必须反映真实情况
+        run: |
+          # opcache 是 zend_extension，不在 module_registry 里。
+          # 旧实现查 module_registry → 恒 false（哪怕 opcache 正开着）。
+          echo "  [关] opcache.enable_cli=0："
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=0 -r '
+          $st = youxiang_status();
+          echo "     opcache_present=" . var_export($st["opcache_present"], true) . PHP_EOL;
+          '
+          echo "  [开] opcache.enable_cli=1："
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r '
+          $st = youxiang_status();
+          $has = (bool)$st["opcache_present"];
+          echo "     opcache_present=" . var_export($has, true)
+             . "  note=" . $st["opcache_note"] . PHP_EOL;
+          // opcache 扩展在场时必须报 true —— 这正是旧实现报 false 的场景
+          $loaded = extension_loaded("Zend OPcache");
+          echo "     extension_loaded(Zend OPcache)=" . var_export($loaded, true) . PHP_EOL;
+          exit(($loaded === $has) ? 0 : 1);
+          '
+          echo "✓ opcache_present 与真实加载状态一致"
+
       - name: 回归 G：open tag 剥除只认文件开头（注释里的 <?php 不得截断）
         run: |
           # 旧实现用 strstr 全文件搜第一个 "<?php"：
