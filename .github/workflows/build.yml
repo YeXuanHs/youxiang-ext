@@ -285,6 +285,28 @@ jobs:
           '
           echo "✓ 0 命中时完全回落到原始编译路径，文件按原样执行"
 
+      - name: 回归 H：opcache_present 必须反映真实情况
+        run: |
+          # opcache 是 zend_extension，不在 module_registry 里。
+          # 旧实现查 module_registry → 恒 false（哪怕 opcache 正开着）。
+          echo "  [关] opcache.enable_cli=0："
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=0 -r '
+          $st = youxiang_status();
+          echo "     opcache_present=" . var_export($st["opcache_present"], true) . PHP_EOL;
+          '
+          echo "  [开] opcache.enable_cli=1："
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r '
+          $st = youxiang_status();
+          $has = (bool)$st["opcache_present"];
+          echo "     opcache_present=" . var_export($has, true)
+             . "  note=" . $st["opcache_note"] . PHP_EOL;
+          // opcache 扩展在场时必须报 true —— 这正是旧实现报 false 的场景
+          $loaded = extension_loaded("Zend OPcache");
+          echo "     extension_loaded(Zend OPcache)=" . var_export($loaded, true) . PHP_EOL;
+          exit(($loaded === $has) ? 0 : 1);
+          '
+          echo "✓ opcache_present 与真实加载状态一致"
+
       - name: 回归 G：open tag 剥除只认文件开头（注释里的 <?php 不得截断）
         run: |
           # 旧实现用 strstr 全文件搜第一个 "<?php"：
