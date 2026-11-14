@@ -276,35 +276,22 @@ jobs:
           '
           echo "✓ 1.6.4 开源版：授权状态 / 界面标识 / 下游查询接口 均为企业版"
 
-      - name: 回归 A：require_once 二次加载正常去重
+      - name: 回归 A：included_files 注册与 require_once 去重
         run: |
-          # 去重键是 zend_file_handle.opened_path，PHP 在调用 compile_file 之前
-          # 就注册进 EG(included_files) 了；本用例验证改写后仍能正确去重
           F=pkg/includes/license/community.php
-          RUN='$f=$argv[1]; require $f; $n=count(get_included_files()); echo "  included 条目数=".$n."
-";'
-          echo "  1) 无扩展 + 关 opcache:"
-          php -d opcache.enable=0 -d opcache.enable_cli=0 -r "$RUN" "$F" 2>&1 | sed 's/^/     /'
-          echo "  2) 无扩展 + 开 opcache:"
-          php -d opcache.enable_cli=1 -r "$RUN" "$F" 2>&1 | sed 's/^/     /'
-          echo "  3) 有扩展 + 关 opcache:"
-          php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r "$RUN" "$F" 2>&1 | sed 's/^/     /'
-          echo "  4) 有扩展 + 开 opcache:"
-          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r "$RUN" "$F" 2>&1 | sed 's/^/     /'
-          echo "  --- 对照：无扩展时 require + require_once 是否正常 ---"
-          php -d opcache.enable=0 -d opcache.enable_cli=0 -r '
-          $f=$argv[1]; require $f; require_once $f; require_once $f;
-          echo "     无扩展：require + 2 次 require_once 未重复声明
-";
-          ' "$F" 2>&1 | sed 's/^/     /' || echo "     无扩展时也失败（说明是 PHP 行为，与扩展无关）"
-          echo "  --- 有扩展时 require + require_once ---"
-          php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r '
-          $f=$argv[1]; require $f; require_once $f; require_once $f;
-          echo "     有扩展：require + 2 次 require_once 未重复声明
-";
-          ' "$F" 2>&1 | sed 's/^/     /' || echo "     有扩展时失败（需修复）"
-          echo "✓ require_once 去重正常，类未重复声明"
-
+          P='require $argv[1]; echo "     included=" . count(get_included_files()) . PHP_EOL;'
+          echo "  [1] 无扩展 + 关 opcache"
+          php -d opcache.enable=0 -d opcache.enable_cli=0 -r "$P" "$F"
+          echo "  [2] 无扩展 + 开 opcache(cli)"
+          php -d opcache.enable_cli=1 -r "$P" "$F"
+          echo "  [3] 有扩展 + 关 opcache"
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r "$P" "$F"
+          echo "  [4] 有扩展 + 开 opcache(cli)"
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable_cli=1 -r "$P" "$F"
+          echo "  [5] 对照：无扩展 require + require_once x2"
+          php -d opcache.enable=0 -d opcache.enable_cli=0 -r 'require $argv[1]; require_once $argv[1]; require_once $argv[1]; echo "     无重复声明" . PHP_EOL;' "$F" || echo "     失败（PHP 自身行为）"
+          echo "  [6] 有扩展 require + require_once x2"
+          php -d extension=$PWD/modules/youxiang.so -d opcache.enable=0 -d opcache.enable_cli=0 -r 'require $argv[1]; require_once $argv[1]; require_once $argv[1]; echo "     无重复声明" . PHP_EOL;' "$F" || echo "     ★ 有扩展时失败（需修复）"
       - name: 回归 B：插入体自包含（不加载 functions.php 也能跑）
         run: |
           # 插入体若引用 normalize_domain() / now() / self::STATUS_OK 等目标文件符号，
