@@ -492,6 +492,39 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 		}
 	}
 
+	if (patches) {
+		zend_string *src = yx_read_file(fn);
+
+		if (src) {
+			int hits = 0;
+			zend_string *patched = yx_patch_source(src, patches, &hits);
+			zend_string *code = yx_strip_open_tag(patched);
+			zval zv;
+			zend_op_array *op_array;
+
+			yx_log(fn, hits);
+
+			/* 锚点全部未命中 = 签名漂移，此时改写不产生任何效果。
+			   这是最危险的情况（装上了但界面照旧），必须留痕。
+			   进程内只告警一次，避免每请求刷屏。 */
+			if (hits == 0) {
+				int need_warn = 0;
+
+				YX_LOCK();
+				if (!yx_warned_miss) {
+					yx_warned_miss = 1;
+					need_warn = 1;
+				}
+				YX_UNLOCK();
+
+				if (need_warn) {
+					zend_error(E_WARNING,
+						"youxiang: 目标文件已匹配，但所有锚点均未命中（%s）。"
+						"通常是程序更新导致函数签名变化，本次改写无效；"
+						"请用 youxiang_selftest() 核对锚点。", fn);
+				}
+			}
+
 #if PHP_VERSION_ID >= 80200
 			/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
 			op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
