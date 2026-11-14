@@ -345,6 +345,12 @@ jobs:
           PY
           echo "  [2] HTML 前缀 + <?php → 应回落不改写，但文件能正常执行"
           php -d extension=$PWD/modules/youxiang.so -r '
+          // 桩：原版 query() 依赖 normalize_domain()；这里没加载 functions.php，
+          // 补一个同名函数让「未被改写」的原始实现能跑起来 ——
+          // 跑得起来本身就证明扩展回落了、没动这个文件。
+          if (!function_exists("normalize_domain")) {
+              function normalize_domain(string $d): string { return strtolower(trim($d)); }
+          }
           ob_start();
           require "/tmp/g2/includes/license/community.php";
           $out = ob_get_clean();
