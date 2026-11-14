@@ -44,7 +44,7 @@
  *   并跳过字符串字面量与注释。见 yx_find_body_brace()。
  *
  * 【C】必须主动登记 EG(included_files)
- *   zend_op_array 在 7.4 ~ 8.3 都没有 opened_path 成员，所以不能靠它去重。
+ *   zend_op_array 没有 opened_path 这个成员（不要依赖它做去重）。
  *   真实的去重键是 zend_file_handle.opened_path，但**登记时机随环境变化**：
  *     · 无 opcache：登记发生在 zend_compile_file 之后；我们返回自己的
  *       op_array 后那段代码不再执行 → 文件没被登记 → require_once
@@ -87,6 +87,7 @@
 #include "zend_execute.h"
 #include "zend_operators.h"
 #include "zend_API.h"
+#include "zend_extensions.h"
 #include "ext/standard/info.h"
 
 #ifdef ZTS
@@ -356,6 +357,11 @@ static const char *yx_find_body_brace(const char *pos, const char *end)
 			continue;
 		}
 		if (c == '}') { if (depth > 0) { depth--; } p++; continue; }
+		/* 签名后直接跟 ';' 说明是抽象方法 / 接口方法（没有函数体）。
+		   此时不能继续往下找 '{'，否则会把 return 插进别的函数。 */
+		if (c == ';' && depth == 0) {
+			return NULL;
+		}
 		p++;
 	}
 	return NULL;
@@ -412,17 +418,51 @@ static zend_string *yx_patch_source(zend_string *src, const yx_patch_t *patches,
 }
 
 /* zend_compile_string 按「代码片段」编译（类似 eval），不能带 <?php 开头 */
+/*
+ * 剥掉开头的 <?php。
+ *
+ * 【绝不能】用 strstr 做全文件搜索：文档注释或字符串里一旦出现 "<?php"
+ * （例如 /** 用法：<?php require 'x.php'; *\/ 这种示例），截断点会落到
+ * 文件中间 —— 前半段代码全部丢失，zend_compile_string 直接语法错误。
+ * 目标文件的内容由发行方决定，我们控制不了它会不会写这种示例。
+ *
+ * 只认「文件开头」（允许 UTF-8 BOM）。开头没有 open tag 时原样返回，
+ * 交给编译器按 AFTER_OPEN_TAG 语义处理 —— 报错也比悄悄丢代码好。
+ */
 static zend_string *yx_strip_open_tag(zend_string *src)
 {
-	const char *code = ZSTR_VAL(src);
-	size_t code_len = ZSTR_LEN(src);
-	const char *tag = strstr(code, "<?php");
+	const char *p = ZSTR_VAL(src);
+	const char *end = p + ZSTR_LEN(src);
 
-	if (tag) {
-		code = tag + 5;
-		code_len = (size_t)((ZSTR_VAL(src) + ZSTR_LEN(src)) - code);
+	/* 跳过 UTF-8 BOM */
+	if ((size_t)(end - p) >= 3
+	 && (unsigned char)p[0] == 0xEF
+	 && (unsigned char)p[1] == 0xBB
+	 && (unsigned char)p[2] == 0xBF) {
+		p += 3;
 	}
-	return zend_string_init(code, code_len, 0);
+
+	if ((size_t)(end - p) >= 5 && strncmp(p, "<?php", 5) == 0) {
+		p += 5;
+	} else if ((size_t)(end - p) >= 3 && strncmp(p, "<?=", 3) == 0) {
+		p += 3;
+	} else if ((size_t)(end - p) >= 2 && strncmp(p, "<?", 2) == 0) {
+		p += 2;
+	} else {
+		return zend_string_init(ZSTR_VAL(src), ZSTR_LEN(src), 0);
+	}
+
+	/* PHP 会把 open tag 后紧跟的一个换行吞掉，这里保持一致 */
+	if (p < end && *p == '\r') {
+		p++;
+		if (p < end && *p == '\n') {
+			p++;
+		}
+	} else if (p < end && *p == '\n') {
+		p++;
+	}
+
+	return zend_string_init(p, (size_t)(end - p), 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,6 +621,14 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 					fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
 				}
 			}
+			/* 重取一次：opened_path 是绝对路径，而 fn 可能原本取自
+			 * fh->filename（主脚本被直接编译时是相对路径）。
+			 * 传给 zend_compile_string 的 filename 决定目标文件里的
+			 * __DIR__ / __FILE__ —— 用相对路径会让 __DIR__ 变成 "."，
+			 * 目标文件里若有 require_once __DIR__ . '/...' 就断链。 */
+			if (fh->opened_path) {
+				fn = ZSTR_VAL(fh->opened_path);
+			}
 
 			{
 				zend_string *code = yx_strip_open_tag(patched);
@@ -612,6 +660,10 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 					}
 					return op_array;
 				}
+				/* 注意：op_array 为 NULL 在这里几乎不可能发生 ——
+				 * zend_compile_string 遇到语法错误走 zend_bailout()（longjmp），
+				 * 不会返回 NULL。下面的 fallthrough 只是防御性写法，
+				 * 不要指望它能"兜住编译失败"。 */
 			}
 		}
 	}
@@ -726,7 +778,9 @@ PHP_FUNCTION(youxiang_status)
 	add_assoc_string(return_value, "mechanism", "compile-time source rewrite (zend_compile_file)");
 
 	/* opcache 是否在场：在场时目标文件会绕过其缓存（每次重新编译） */
-	opcache = zend_hash_str_exists(&module_registry, "Zend OPcache", sizeof("Zend OPcache") - 1) ? 1 : 0;
+	/* opcache 是 zend_extension，注册在 zend_extensions 链表里，
+	 * 不在 module_registry（那只装普通模块）。用官方 API 查。 */
+	opcache = (zend_get_extension("Zend OPcache") != NULL) ? 1 : 0;
 	add_assoc_bool(return_value, "opcache_present", opcache);
 	add_assoc_string(return_value, "opcache_note", opcache
 		? "目标文件（license 模块 / 安装向导）绕过 opcache 重新编译，属预期行为；其余文件仍走 opcache"
@@ -805,7 +859,7 @@ PHP_MINFO_FUNCTION(youxiang)
 		yx_count_patches(yx_patches_license), yx_count_patches(yx_patches_install));
 	php_info_print_table_row(2, "anchors", buf);
 	snprintf(buf, sizeof(buf), "%d",
-		zend_hash_str_exists(&module_registry, "Zend OPcache", sizeof("Zend OPcache") - 1) ? 1 : 0);
+		(zend_get_extension("Zend OPcache") != NULL) ? 1 : 0);
 	php_info_print_table_row(2, "opcache present", buf);
 	php_info_print_table_end();
 }
