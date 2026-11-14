@@ -46,6 +46,16 @@ jobs:
           ./configure --enable-youxiang
           make -j"$(nproc)"
 
+      - name: 静态检查：ZTS 缓存宏必须配对
+        run: |
+          # RINIT 用了 ZEND_TSRMLS_CACHE_UPDATE()，就必须有 ZEND_TSRMLS_CACHE_DEFINE()；
+          # 缺了在 ZTS + 动态编译下链接期报 undefined reference to tsrm_ls_cache。
+          if grep -q "ZEND_TSRMLS_CACHE_UPDATE" src/youxiang.c; then
+            grep -q "ZEND_TSRMLS_CACHE_DEFINE" src/youxiang.c \
+              || { echo "缺少 ZEND_TSRMLS_CACHE_DEFINE()，ZTS 下会链接失败"; exit 1; }
+            echo "ZTS 缓存宏已配对（UPDATE + DEFINE）"
+          fi
+
       - name: 校验发布版不含调试输出
         run: |
           if strings modules/youxiang.so | grep -q "youxiang] compile"; then
@@ -227,6 +237,53 @@ jobs:
           exit((!empty($r["ok"]) && $r["anchors_hit"] === 11) ? 0 : 1);
           '
           echo "✓ youxiang_selftest() 可主动核对锚点（部署后立刻能验，不必等页面触发）"
+
+      - name: 回归 E：路径边界匹配（相似路径不得被误判）
+        run: |
+          # 裸子串匹配会把 notincludes/license.php、*.bak 也当成目标文件，
+          # 一旦误判就是给不该改的文件插 return —— 直接搞坏别的模块。
+          php -d extension=$PWD/modules/youxiang.so -r '
+          $cases = [
+            // [路径, 期望是否为目标文件]
+            ["/var/www/site/includes/license/community.php", true],
+            ["/var/www/site/includes/license.php",           true],
+            ["/var/www/site/install/install.php",            true],
+            ["/var/www/notincludes/license.php",             false],
+            ["/var/www/myincludes/license.php",              false],
+            ["/var/www/site/includes/license.php.bak",       false],
+            ["/var/www/site/includes/license/community.php~", false],
+            ["/var/www/site/includes/other.php",             false],
+          ];
+          $bad = 0;
+          foreach ($cases as [$path, $want]) {
+              $r = youxiang_selftest($path);
+              $got = !empty($r["target"]);
+              $mark = ($got === $want) ? "ok" : "✗";
+              if ($got !== $want) { $bad++; }
+              printf("     %s %-52s target=%s\n", $mark, $path, var_export($got, true));
+          }
+          exit($bad === 0 ? 0 : 1);
+          '
+          echo "✓ 路径边界匹配正确：相似路径不会被误判为目标文件"
+
+      - name: 回归 F：锚点全 miss 时走原始编译路径（行为完全透明）
+        run: |
+          # 造一个「路径是目标文件、但内容完全是别的东西」的场景：
+          # 扩展应识别为 0 命中，然后走原始 compile_file，而不是用自己的
+          # zend_compile_string 再跑一遍。
+          mkdir -p /tmp/nomiss/includes/license
+          printf '<?php\nclass FakeThing { public function hello(): string { return "hi"; } }\n' \
+            > /tmp/nomiss/includes/license/community.php
+          php -d extension=$PWD/modules/youxiang.so -d display_errors=1 -r '
+          $f = "/tmp/nomiss/includes/license/community.php";
+          $r = youxiang_selftest($f);
+          echo "     anchors_hit=" . $r["anchors_hit"] . "/" . $r["anchors_total"] . PHP_EOL;
+          require $f;
+          $o = new FakeThing();
+          echo "     原文件逻辑仍可正常执行: " . $o->hello() . PHP_EOL;
+          exit(($r["anchors_hit"] === 0 && $o->hello() === "hi") ? 0 : 1);
+          '
+          echo "✓ 0 命中时完全回落到原始编译路径，文件按原样执行"
 
       - name: 回归 D：非目标文件不受影响（走原始编译，opcache 照常）
         run: |

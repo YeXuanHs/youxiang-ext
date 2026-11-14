@@ -103,8 +103,8 @@ static zend_op_array *(*yx_orig_compile_file)(zend_file_handle *fh, int type);
 
 #ifdef ZTS
 static MUTEX_T yx_mutex = NULL;
-# define YX_LOCK()   do { tsrm_mutex_lock(yx_mutex); } while (0)
-# define YX_UNLOCK() do { tsrm_mutex_unlock(yx_mutex); } while (0)
+# define YX_LOCK()   do { if (yx_mutex) { tsrm_mutex_lock(yx_mutex); } } while (0)
+# define YX_UNLOCK() do { if (yx_mutex) { tsrm_mutex_unlock(yx_mutex); } } while (0)
 #else
 # define YX_LOCK()   do { } while (0)
 # define YX_UNLOCK() do { } while (0)
@@ -333,7 +333,9 @@ static const char *yx_find_body_brace(const char *pos, const char *end)
 			while (p < end && *p != '\n') { p++; }
 			continue;
 		}
-		if (c == '#') {
+		/* PHP 8 的 attribute 写作 #[...]，不是注释；
+		   只有 '#' 后面不是 '[' 时才算行注释 */
+		if (c == '#' && !((p + 1) < end && p[1] == '[')) {
 			while (p < end && *p != '\n') { p++; }
 			continue;
 		}
@@ -427,19 +429,65 @@ static zend_string *yx_strip_open_tag(zend_string *src)
 /* 目标文件判定                                                        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * 路径后缀匹配（带边界检查）
+ * 不能直接用 strstr：`/var/www/notincludes/license.php.bak`、
+ * `myincludes/license.php` 都会被裸子串命中 —— 一旦误判就会给不该改的
+ * 文件插 return，直接把别的模块搞坏。
+ * 这里要求「结尾完全相同」且「后缀前是路径分隔符或字符串开头」。
+ */
+static int yx_path_matches(const char *fn, const char *suffix)
+{
+	size_t flen, slen;
+
+	if (!fn || !suffix) {
+		return 0;
+	}
+	flen = strlen(fn);
+	slen = strlen(suffix);
+	if (flen < slen) {
+		return 0;
+	}
+	if (strcmp(fn + (flen - slen), suffix) != 0) {
+		return 0;
+	}
+	if (flen == slen) {
+		return 1;	/* 相对路径就是后缀本身 */
+	}
+	{
+		char prev = fn[flen - slen - 1];
+		return (prev == '/' || prev == '\\');
+	}
+}
+
+/* 锚点条数（供 status 报告，避免以后加锚点忘记改数字） */
+static int yx_count_patches(const yx_patch_t *patches)
+{
+	int n = 0;
+
+	while (patches && patches[n].anchor != NULL) {
+		n++;
+	}
+	return n;
+}
+
 static const yx_patch_t *yx_pick_patches(const char *fn)
 {
-	if (strstr(fn, "install/install.php") || strstr(fn, "install\\install.php")) {
+	if (yx_path_matches(fn, "install/install.php")
+	 || yx_path_matches(fn, "install\\install.php")) {
 		return yx_patches_install;
 	}
 	/* 1.6.2 及以前：单文件 */
-	if (strstr(fn, "includes/license.php") || strstr(fn, "includes\\license.php")) {
+	if (yx_path_matches(fn, "includes/license.php")
+	 || yx_path_matches(fn, "includes\\license.php")) {
 		return yx_patches_license;
 	}
 	/* 1.6.4 起：拆成 community / official 两个模块
-	   注意这两个路径不含 "includes/license.php" 子串，必须显式列出 */
-	if (strstr(fn, "includes/license/community.php") || strstr(fn, "includes\\license\\community.php")
-	 || strstr(fn, "includes/license/official.php")  || strstr(fn, "includes\\license\\official.php")) {
+	   注意这两个路径的结尾不是 "includes/license.php"，必须显式列出 */
+	if (yx_path_matches(fn, "includes/license/community.php")
+	 || yx_path_matches(fn, "includes\\license\\community.php")
+	 || yx_path_matches(fn, "includes/license/official.php")
+	 || yx_path_matches(fn, "includes\\license\\official.php")) {
 		return yx_patches_license;
 	}
 	return NULL;
@@ -477,36 +525,25 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 		patches = yx_pick_patches(fn);
 	}
 
-	/* 【关键修复】补上 fh->opened_path
-	 * opened_path 是原始 compile_file 内部（open_file_for_scanning）才设置的，
-	 * 我们替换了 compile_file 且不调用它 → opened_path 恒为 NULL。
-	 * 而 PHP 在 include 处理里用 opened_path 作为 EG(included_files) 的键，
-	 * 键为 NULL 时登记失败 → require_once 认为"没包含过" → 二次编译 →
-	 * "Cannot redeclare class"。有 opcache 时是 opcache 的钩子顺手设了它，
-	 * 所以只有"无 opcache"环境复现。
-	 * 这里用绝对路径补上（与 require_once 的 resolved_path 同口径）。 */
-	if (!fh->opened_path && fn && *fn) {
-		char resolved[MAXPATHLEN];
-		if (expand_filepath(fn, resolved)) {
-			fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
-		}
+	if (!patches) {
+		/* 非目标文件：完全透明，直接交给原始编译路径（opcache 照常） */
+		return yx_orig_compile_file(fh, type);
 	}
 
-	if (patches) {
+	{
 		zend_string *src = yx_read_file(fn);
 
 		if (src) {
 			int hits = 0;
 			zend_string *patched = yx_patch_source(src, patches, &hits);
-			zend_string *code = yx_strip_open_tag(patched);
-			zval zv;
-			zend_op_array *op_array;
 
 			yx_log(fn, hits);
 
-			/* 锚点全部未命中 = 签名漂移，此时改写不产生任何效果。
-			   这是最危险的情况（装上了但界面照旧），必须留痕。
-			   进程内只告警一次，避免每请求刷屏。 */
+			/* 锚点全部未命中 = 签名漂移。
+			 * 此时改写不会有任何效果，直接走原始编译路径 ——
+			 * 让行为与"没装扩展"完全一致（连 opcache 行为都一致），
+			 * 只留下日志与告警供排查。不要用更脆的
+			 * zend_compile_string 再跑一遍原逻辑。 */
 			if (hits == 0) {
 				int need_warn = 0;
 
@@ -523,38 +560,58 @@ static zend_op_array *yx_compile_file(zend_file_handle *fh, int type)
 						"通常是程序更新导致函数签名变化，本次改写无效；"
 						"请用 youxiang_selftest() 核对锚点。", fn);
 				}
+
+				if (patched != src) {
+					zend_string_release(patched);
+				}
+				zend_string_release(src);
+				return yx_orig_compile_file(fh, type);
 			}
+
+			/* 确实要改写时才补 opened_path：
+			 * 它本由原始 compile_file 内部（open_file_for_scanning）设置，
+			 * 我们替换了 compile_file 且不调用它 → 恒为 NULL；
+			 * 而 PHP 用 opened_path 作 EG(included_files) 的键，
+			 * 键为 NULL 时登记失败 → require_once 二次编译 →
+			 * "Cannot redeclare class"。
+			 * 只在命中路径上补，避免干扰每一条普通 include。 */
+			if (!fh->opened_path && fn && *fn) {
+				char resolved[MAXPATHLEN];
+				if (expand_filepath(fn, resolved)) {
+					fh->opened_path = zend_string_init(resolved, strlen(resolved), 0);
+				}
+			}
+
+			{
+				zend_string *code = yx_strip_open_tag(patched);
+				zval zv;
+				zend_op_array *op_array;
 
 #if PHP_VERSION_ID >= 80200
-			/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
-			op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
+				/* PHP 8.2+：(zend_string *source, const char *filename, zend_compile_position) */
+				op_array = zend_compile_string(code, fn, ZEND_COMPILE_POSITION_AFTER_OPEN_TAG);
 #elif PHP_VERSION_ID >= 80000
-			/* PHP 8.0~8.1：(zend_string *source, const char *filename) */
-			op_array = zend_compile_string(code, fn);
+				/* PHP 8.0~8.1：(zend_string *source, const char *filename) */
+				op_array = zend_compile_string(code, fn);
 #else
-			/* PHP 7.4：(zval *source, char *filename) */
-			ZVAL_STR(&zv, code);
-			op_array = zend_compile_string(&zv, (char *)fn);
+				/* PHP 7.4：(zval *source, char *filename) */
+				ZVAL_STR(&zv, code);
+				op_array = zend_compile_string(&zv, (char *)fn);
 #endif
-			zend_string_release(code);
-			if (patched != src) {
-				zend_string_release(patched);
-			}
-			zend_string_release(src);
+				zend_string_release(code);
 
-			if (op_array) {
-				/* 【必须主动登记 included_files】
-				 * 实测（探针验证）：不同环境下 PHP 把本文件登记进
-				 * EG(included_files) 的时机不一致 ——
-				 *   · 无 opcache 时，登记发生在 zend_compile_file 之后，
-				 *     而我们返回自己的 op_array 后该路径不再执行 → 登记丢失；
-				 *   · 有 opcache 时，opcache 的钩子内部会补上，所以看起来正常。
-				 * 后果：require_once 认为"没包含过"，二次编译 → Cannot redeclare。
-				 * 因此这里以 fh->opened_path 为键补登记一次（幂等，已存在则返回 false）。 */
-				if (fh->opened_path) {
-					zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
+				if (patched != src) {
+					zend_string_release(patched);
 				}
-				return op_array;
+				zend_string_release(src);
+
+				if (op_array) {
+					/* 幂等补登记：与 PHP 自身的登记互为兜底 */
+					if (fh->opened_path) {
+						zend_hash_add_empty_element(&EG(included_files), fh->opened_path);
+					}
+					return op_array;
+				}
 			}
 		}
 	}
@@ -630,6 +687,23 @@ PHP_FUNCTION(youxiang_selftest)
 		}
 		add_assoc_long(return_value, "anchors_total", total);
 		add_assoc_long(return_value, "anchors_hit", hits);
+
+		/* 依赖检查：badge() 的插入体里调用了 self::query()。
+		 * 若 badge 命中而 query 未命中（签名变了 / 该实现里没有 query），
+		 * badge 的插入体会在运行时 fatal —— 提前在这里报出来。 */
+		{
+			static const char k_badge[] = "public static function badge(?string $domain = null): array";
+			static const char k_query[] = "public static function query(string $domain, bool $force = false): array";
+			zval *zb = zend_hash_str_find(Z_ARRVAL(missing), k_badge, sizeof(k_badge) - 1);
+			zval *zq = zend_hash_str_find(Z_ARRVAL(missing), k_query, sizeof(k_query) - 1);
+
+			if (zb && zq && zend_is_true(zb) && !zend_is_true(zq)) {
+				add_assoc_string(return_value, "dependency_warning",
+					"badge() 命中但 query() 未命中：badge 的插入体调用 self::query()，"
+					"请同时核对 query() 签名，否则运行时会 fatal");
+			}
+		}
+
 		add_assoc_zval(return_value, "anchors", &missing);
 	}
 	add_assoc_bool(return_value, "ok", (hits == total));
@@ -658,8 +732,8 @@ PHP_FUNCTION(youxiang_status)
 		? "目标文件（license 模块 / 安装向导）绕过 opcache 重新编译，属预期行为；其余文件仍走 opcache"
 		: "未检测到 opcache");
 
-	add_assoc_long(return_value, "anchors_license", 11);
-	add_assoc_long(return_value, "anchors_install", 3);
+	add_assoc_long(return_value, "anchors_license", yx_count_patches(yx_patches_license));
+	add_assoc_long(return_value, "anchors_install", yx_count_patches(yx_patches_install));
 	add_assoc_string(return_value, "notice",
 		"授权码仍需填写（任意内容均可通过）；不再要求购买授权包；站点恒识别为企业版授权。");
 }
@@ -688,6 +762,7 @@ static const zend_function_entry youxiang_functions[] = {
 PHP_MINIT_FUNCTION(youxiang)
 {
 #ifdef ZTS
+	/* 分配失败时不阻断加载：降级为无锁（日志统计可能不准，但不 crash） */
 	yx_mutex = tsrm_mutex_alloc();
 #endif
 	yx_orig_compile_file = zend_compile_file;
@@ -726,7 +801,9 @@ PHP_MINFO_FUNCTION(youxiang)
 	php_info_print_table_row(2, "youxiang support", "enabled");
 	php_info_print_table_row(2, "version", YX_EXT_VERSION);
 	php_info_print_table_row(2, "mechanism", "compile-time source rewrite");
-	php_info_print_table_row(2, "anchors", "license 11 / install 3");
+	snprintf(buf, sizeof(buf), "license %d / install %d",
+		yx_count_patches(yx_patches_license), yx_count_patches(yx_patches_install));
+	php_info_print_table_row(2, "anchors", buf);
 	snprintf(buf, sizeof(buf), "%d",
 		zend_hash_str_exists(&module_registry, "Zend OPcache", sizeof("Zend OPcache") - 1) ? 1 : 0);
 	php_info_print_table_row(2, "opcache present", buf);
@@ -746,4 +823,16 @@ zend_module_entry youxiang_module_entry = {
 	STANDARD_MODULE_PROPERTIES
 };
 
+/*
+ * ZTS 下必须显式定义 tsrm_ls_cache。
+ * ZEND_GET_MODULE 只提供 get_module()，不定义该符号；
+ * RINIT 里的 ZEND_TSRMLS_CACHE_UPDATE()（以及任何 EG() 访问）
+ * 会引用它 —— 缺了在 ZTS + 动态编译时链接期报
+ * "undefined reference to tsrm_ls_cache"。
+ */
+#ifdef COMPILE_DL_YOUXIANG
+# ifdef ZTS
+ZEND_TSRMLS_CACHE_DEFINE()
+# endif
 ZEND_GET_MODULE(youxiang)
+#endif
